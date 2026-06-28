@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<settings>
+  <category label="General">
+    <setting id="aiometadata_url" type="text" label="AIOMetadata manifest URL" default="" />
+    <setting id="refresh_aiometadata" type="action" label="Refresh AIOMetadata" action="RunPlugin(plugin://plugin.video.aiostreams/?action=refresh_aiometadata)" />
+    <setting id="aiometadata_refresh_token" type="text" label="AIOMetadata refresh token" default="" visible="false" />
+    <setting id="aiostreams_url" type="text" label="AIOStreams manifest URL" default="" />
+    <setting id="refresh_aiostreams" type="action" label="Refresh AIOStreams" action="RunPlugin(plugin://plugin.video.aiostreams/?action=refresh_aiostreams)" />
+    <setting id="aiostreams_refresh_token" type="text" label="AIOStreams refresh token" default="" visible="false" />
+    <setting id="request_timeout" type="number" label="Request timeout seconds" default="25" />
+    <setting id="use_local_forwarder" type="bool" label="Use local playback forwarder" default="true" />
+    <setting id="forwarder_port" type="number" label="Local forwarder port" default="45987" />
+    <setting id="imdb_episode_scores" type="bool" label="Enable IMDb episode scores" default="true" />
+    <setting id="catalog_pages_per_page" type="number" label="Catalog provider pages per Kodi page" default="3" />
+    <setting id="search_result_limit" type="number" label="Search result limit" default="10" />
+    <setting id="view_apply_delay_ms" type="number" label="View apply delay milliseconds" default="50" />
+    <setting id="view_root" type="text" label="Main addon list view ID (use View Mode Setup)" default="0" />
+    <setting id="view_results" type="text" label="Catalog results view ID (use View Mode Setup)" default="0" />
+    <setting id="view_search" type="text" label="Search results view ID (use View Mode Setup)" default="0" />
+    <setting id="view_seasons" type="text" label="Season folders view ID (use View Mode Setup)" default="0" />
+    <setting id="view_episodes" type="text" label="Episode list view ID (use View Mode Setup)" default="0" />
+    <setting id="view_sources" type="text" label="Source results view ID (use View Mode Setup)" default="0" />
+  </category>
+</settings>

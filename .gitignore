@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.zip
+
+credentials.json
+
+aios-debug/
+backups/
+
+.DS_Store
+Thumbs.db
