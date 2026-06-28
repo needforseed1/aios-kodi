@@ -26,6 +26,7 @@ PLUGIN_URL = sys.argv[0]
 USER_AGENT = "AIOStreams/0.1 Kodi"
 DEFAULT_AIOMETADATA_URL = ""
 DEFAULT_AIOSTREAMS_URL = ""
+CINEMETA_URL = "https://v3-cinemeta.strem.io"
 VIEW_SECTIONS = (
     ("view_root", "Main Addon Lists", "videos"),
     ("view_results", "Catalog Results", "movies"),
@@ -252,7 +253,7 @@ def cached_service_json(url, service, ttl):
 
 
 def search_cache_key(search_type, query):
-    value = "%s|%s" % (search_type or "", query.strip().lower())
+    value = "%s|%s|%s" % (aiometa_base(), search_type or "", query.strip().lower())
     return hashlib.sha1(value.encode("utf-8")).hexdigest()
 
 
@@ -643,7 +644,15 @@ def setting_int(setting_id, default):
 
 
 def aiometa_base():
+    return configured_aiometa_base() or CINEMETA_URL
+
+
+def configured_aiometa_base():
     return endpoint_base("aiometadata_url") or credential_endpoint_base("aiometadata_url") or endpoint_base_value(DEFAULT_AIOMETADATA_URL)
+
+
+def metadata_provider_label():
+    return "AIOMetadata" if configured_aiometa_base() else "Cinemeta"
 
 
 def aiostreams_base():
@@ -652,8 +661,6 @@ def aiostreams_base():
 
 def get_manifest():
     base = aiometa_base()
-    if not base:
-        raise RuntimeError("AIOMetadata manifest URL is not configured")
     return get_json(service_url(base + "/manifest.json", "aiometadata"))
 
 
@@ -961,7 +968,7 @@ def enrich_episode_meta(item_type, video):
 
 def list_root():
     xbmcplugin.setPluginCategory(HANDLE, "AIOStreams")
-    if not aiometa_base() or not aiostreams_base():
+    if not aiostreams_base():
         add_directory("Settings", {"action": "settings"}, fallback_art("settings"))
         set_view("videos", "view_root")
         return
@@ -992,7 +999,27 @@ def list_root():
 
 
 def root_catalogs(manifest):
-    return [catalog for catalog in manifest.get("catalogs", []) if catalog.get("showInHome")]
+    catalogs = manifest.get("catalogs", [])
+    home_catalogs = [catalog for catalog in catalogs if catalog.get("showInHome")]
+    if home_catalogs:
+        return home_catalogs
+    return [catalog for catalog in catalogs if catalog_is_browseable(catalog)]
+
+
+def catalog_is_browseable(catalog):
+    required = catalog.get("extraRequired") or [extra.get("name") for extra in catalog.get("extra", []) if extra.get("isRequired")]
+    for name in required:
+        extra = catalog_extra_definition(catalog, name)
+        if not extra.get("options"):
+            return False
+    return True
+
+
+def catalog_extra_definition(catalog, name):
+    for extra in catalog.get("extra", []):
+        if extra.get("name") == name:
+            return extra
+    return {}
 
 
 def duplicate_catalog_labels(catalogs):
@@ -1816,7 +1843,7 @@ def settings_menu():
     xbmcplugin.setPluginCategory(HANDLE, "Settings")
     add_action("Configure addon URLs and options", {"action": "configure"}, fallback_art("settings"))
     add_action("Credentials file location", {"action": "credentials_info"}, fallback_art("settings"))
-    add_action("Refresh AIOMetadata", {"action": "refresh_aiometadata"}, fallback_art("settings"))
+    add_action("Refresh " + metadata_provider_label(), {"action": "refresh_aiometadata"}, fallback_art("settings"))
     add_action("Refresh AIOStreams", {"action": "refresh_aiostreams"}, fallback_art("settings"))
     add_directory("View Mode Setup", {"action": "view_mode_setup"}, fallback_art("settings"))
     add_action("About", {"action": "about"}, fallback_art("default"))
@@ -1875,7 +1902,7 @@ def format_hms(seconds):
 def search(search_type="", query=""):
     query = query.strip()
     if not query:
-        query = xbmcgui.Dialog().input("Search AIOMetadata", type=xbmcgui.INPUT_ALPHANUM).strip()
+        query = xbmcgui.Dialog().input("Search " + metadata_provider_label(), type=xbmcgui.INPUT_ALPHANUM).strip()
         if query:
             search(search_type, query)
         else:
@@ -1948,7 +1975,7 @@ def refresh_service(service):
         label = "AIOStreams"
     else:
         base = aiometa_base()
-        label = "AIOMetadata"
+        label = metadata_provider_label()
     if not base:
         error("%s URL is not configured" % label)
         set_view()
@@ -1984,7 +2011,7 @@ def view_mode_test(setting_id, view_id, content):
 def about():
     xbmcgui.Dialog().ok(
         "AIOStreams for Kodi",
-        "Configure both full manifest URLs. AIOMetadata is used for catalogs, search, and details. AIOStreams is used for source lookup and playback.",
+        "Configure the AIOStreams manifest URL for source lookup and playback. AIOMetadata is optional for catalogs, search, and details; Cinemeta is used when AIOMetadata is not configured.",
     )
     list_root()
 
@@ -1994,7 +2021,7 @@ def credentials_info():
     load_credentials()
     xbmcgui.Dialog().ok(
         "AIOStreams Credentials",
-        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nKeys:\naiometadata_url\naiostreams_url" % path,
+        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nKeys:\naiometadata_url (optional; Cinemeta is used when blank)\naiostreams_url" % path,
     )
     settings_menu()
 
