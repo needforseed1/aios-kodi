@@ -25,8 +25,8 @@ Use the in-addon `Settings -> Credentials file location` action to create/show t
 
 ```json
 {
-  "aiometadata_url": "",
-  "aiostreams_url": "https://example.com/stremio/<uuid>/<config>/manifest.json"
+  "aiostreams_url": "https://example.com/stremio/<uuid>/<config>/manifest.json",
+  "aiometadata_url": ""
 }
 ```
 

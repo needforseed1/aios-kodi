@@ -120,12 +120,12 @@ def load_credentials():
 
 def save_credentials_template(path):
     data = {
-        "aiometadata_url": "",
         "aiostreams_url": "",
+        "aiometadata_url": "",
     }
     try:
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
+            json.dump(data, handle, indent=2)
     except OSError as exc:
         xbmc.log("AIOStreams could not create credentials file: %s" % exc, xbmc.LOGWARNING)
 
@@ -2021,7 +2021,7 @@ def credentials_info():
     load_credentials()
     xbmcgui.Dialog().ok(
         "AIOStreams Credentials",
-        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nKeys:\naiometadata_url (optional; Cinemeta is used when blank)\naiostreams_url" % path,
+        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)" % path,
     )
     settings_menu()
 

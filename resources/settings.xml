@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
   <category label="General">
-    <setting id="aiometadata_url" type="text" label="AIOMetadata manifest URL (optional; blank uses Cinemeta)" default="" />
-    <setting id="refresh_aiometadata" type="action" label="Refresh Metadata" action="RunPlugin(plugin://plugin.video.aiostreams/?action=refresh_aiometadata)" />
-    <setting id="aiometadata_refresh_token" type="text" label="AIOMetadata refresh token" default="" visible="false" />
     <setting id="aiostreams_url" type="text" label="AIOStreams manifest URL" default="" />
     <setting id="refresh_aiostreams" type="action" label="Refresh AIOStreams" action="RunPlugin(plugin://plugin.video.aiostreams/?action=refresh_aiostreams)" />
     <setting id="aiostreams_refresh_token" type="text" label="AIOStreams refresh token" default="" visible="false" />
+    <setting id="aiometadata_url" type="text" label="AIOMetadata manifest URL (optional; blank uses Cinemeta)" default="" />
+    <setting id="refresh_aiometadata" type="action" label="Refresh Metadata" action="RunPlugin(plugin://plugin.video.aiostreams/?action=refresh_aiometadata)" />
+    <setting id="aiometadata_refresh_token" type="text" label="AIOMetadata refresh token" default="" visible="false" />
     <setting id="request_timeout" type="number" label="Request timeout seconds" default="25" />
     <setting id="use_local_forwarder" type="bool" label="Use local playback forwarder" default="true" />
     <setting id="forwarder_port" type="number" label="Local forwarder port" default="45987" />
