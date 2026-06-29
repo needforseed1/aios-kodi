@@ -418,6 +418,8 @@ def get_json(url):
         raise RuntimeError("HTTP %s from %s" % (exc.code, url))
     except urllib.error.URLError as exc:
         raise RuntimeError("Network error: %s" % exc.reason)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Invalid JSON from %s: %s" % (url, exc))
 
 
 def with_query_param(url, key, value):
@@ -620,8 +622,11 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def resolve_playback_redirect(url):
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def resolve_playback_redirect(url, headers=None):
+    request_headers = sanitize_playback_headers(headers)
+    if not any(str(key).lower() == "user-agent" for key in request_headers):
+        request_headers["User-Agent"] = USER_AGENT
+    request = urllib.request.Request(url, headers=request_headers)
     opener = urllib.request.build_opener(NoRedirectHandler)
     try:
         opener.open(request, timeout=setting_int("request_timeout", 25)).close()
@@ -1080,7 +1085,10 @@ def catalog_extra(catalog, genre, skip, search_query=None):
         extras.append(("skip", str(skip)))
     if not extras:
         return ""
-    return urllib.parse.urlencode(extras)
+    return "&".join(
+        "%s=%s" % (urllib.parse.quote(str(key), safe=""), urllib.parse.quote(str(value), safe=""))
+        for key, value in extras
+    )
 
 
 def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
@@ -1113,7 +1121,7 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
         extra_path = catalog_extra(catalog, genre, current_skip, search_query)
         url = join_url(aiometa_base(), "catalog", catalog_type, catalog_id)
         if extra_path:
-            url += "/" + urllib.parse.quote(extra_path, safe="=&+")
+            url += "/" + extra_path
         url += ".json"
 
         try:
@@ -1702,10 +1710,8 @@ def kodi_header_url(url, headers):
 
 
 def playback_url_and_headers(original_url, resolved_url, headers):
-    original_host = urllib.parse.urlparse(original_url).hostname or ""
     resolved_parts = urllib.parse.urlparse(resolved_url)
-    resolved_host = resolved_parts.hostname or ""
-    playback_headers = sanitize_playback_headers(headers) if resolved_host and resolved_host != original_host else {}
+    playback_headers = sanitize_playback_headers(headers)
 
     if resolved_parts.username:
         username = urllib.parse.unquote(resolved_parts.username or "")
@@ -1760,8 +1766,9 @@ def play(url, headers_json, resume_seconds=0, context=None):
         headers = json.loads(headers_json or "{}")
     except ValueError:
         headers = {}
+    headers = sanitize_playback_headers(headers)
     try:
-        resolved_url = resolve_playback_redirect(url)
+        resolved_url = resolve_playback_redirect(url, headers)
     except RuntimeError as exc:
         xbmc.log("AIOStreams playback resolve failed for %s: %s" % (url, exc), xbmc.LOGERROR)
         error(str(exc))
@@ -1930,7 +1937,7 @@ def search(search_type="", query=""):
         searched_catalogs += 1
         extra_path = catalog_extra(catalog, "", 0, query)
         url = join_url(aiometa_base(), "catalog", catalog.get("type"), catalog.get("id"))
-        url += "/" + urllib.parse.quote(extra_path, safe="=&+") + ".json"
+        url += "/" + extra_path + ".json"
         try:
             response = get_json(service_url(url, "aiometadata"))
         except RuntimeError as exc:

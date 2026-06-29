@@ -20,6 +20,7 @@ CURRENT_PLAYBACK_FILE = "current_playback.json"
 FORWARDER_TOKENS_FILE = "forwarder_tokens.json"
 USER_AGENT = "AIOStreams/0.1 Kodi"
 PLAYBACK_HEADER_DENYLIST = {"range", "if-range", "content-range", "content-length"}
+CURRENT_PLAYBACK_TTL = 10 * 60
 
 
 class ForwarderServer(ThreadingHTTPServer):
@@ -115,7 +116,12 @@ def clear_current_playback():
 
 
 def fresh_context(context):
-    return bool(context)
+    if not context:
+        return False
+    started = safe_int(context.get("started"))
+    if not started:
+        return False
+    return time.time() - started <= CURRENT_PLAYBACK_TTL
 
 
 def entry_from_context(context):
