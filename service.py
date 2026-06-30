@@ -41,6 +41,13 @@ def profile_path(filename):
     return os.path.join(profile, filename)
 
 
+def atomic_json_dump(path, data, **kwargs):
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, **kwargs)
+    os.replace(tmp_path, path)
+
+
 def setting_int(setting_id, default):
     try:
         return int((ADDON.getSetting(setting_id) or "").strip() or default)
@@ -77,8 +84,7 @@ def save_resume_entries(entries):
     path = profile_path(RESUME_FILE)
     entries = sorted(entries, key=lambda item: item.get("updated", 0), reverse=True)[:50]
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"entries": entries}, handle, indent=2, sort_keys=True)
+        atomic_json_dump(path, {"entries": entries}, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams service could not save resume history: %s" % exc, xbmc.LOGWARNING)
 
@@ -119,8 +125,7 @@ def load_current_playback():
 def clear_current_playback():
     path = profile_path(CURRENT_PLAYBACK_FILE)
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({}, handle)
+        atomic_json_dump(path, {})
     except OSError as exc:
         xbmc.log("AIOStreams service could not clear current playback: %s" % exc, xbmc.LOGWARNING)
 
@@ -146,7 +151,7 @@ def entry_from_context(context):
         "headers": context.get("headers") or {},
         "art": context.get("art") if isinstance(context.get("art"), dict) else {},
         "position": safe_int(context.get("resume")),
-        "duration": 0,
+        "duration": safe_int(context.get("duration")),
     }
 
 
@@ -282,15 +287,16 @@ def record_resume(player, state):
         if position <= 0:
             return
         entry["position"] = position
-        entry["duration"] = duration
+        entry["duration"] = duration or safe_int(entry.get("duration"))
+        resume_duration = safe_int(entry.get("duration"))
         now = time.time()
         last_position = safe_int(state.get("last_position"))
         position_jump = last_position and abs(position - last_position) >= 30
         state["last_position"] = position
         if position_jump or now - float(state.get("last_save") or 0) >= 2:
-            if should_keep_resume(position, duration):
+            if should_keep_resume(position, resume_duration):
                 upsert_resume_entry(entry)
-                xbmc.log("AIOStreams resume saved at %ss/%ss" % (position, duration), xbmc.LOGDEBUG)
+                xbmc.log("AIOStreams resume saved at %ss/%ss" % (position, resume_duration), xbmc.LOGDEBUG)
             state["last_save"] = now
         return
 

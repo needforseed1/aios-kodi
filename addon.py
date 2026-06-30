@@ -103,6 +103,13 @@ def profile_path(filename):
     return os.path.join(profile, filename)
 
 
+def atomic_json_dump(path, data, **kwargs):
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, **kwargs)
+    os.replace(tmp_path, path)
+
+
 def credentials_path():
     return profile_path(CREDENTIALS_FILE)
 
@@ -151,8 +158,7 @@ def save_resume_entries(entries):
     path = profile_path(RESUME_FILE)
     entries = sorted(entries, key=lambda item: item.get("updated", 0), reverse=True)[:50]
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"entries": entries}, handle, indent=2, sort_keys=True)
+        atomic_json_dump(path, {"entries": entries}, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save resume history: %s" % exc, xbmc.LOGWARNING)
 
@@ -194,8 +200,7 @@ def save_search_cache(data):
     sorted_entries = sorted(entries.items(), key=lambda item: item[1].get("updated", 0), reverse=True)[:20]
     path = profile_path(SEARCH_CACHE_FILE)
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"entries": dict(sorted_entries)}, handle, indent=2, sort_keys=True)
+        atomic_json_dump(path, {"entries": dict(sorted_entries)}, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save search cache: %s" % exc, xbmc.LOGWARNING)
 
@@ -231,8 +236,7 @@ def save_api_cache(data):
         kept[key] = entry
     path = profile_path(API_CACHE_FILE)
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"entries": kept}, handle, indent=2, sort_keys=True)
+        atomic_json_dump(path, {"entries": kept}, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save API cache: %s" % exc, xbmc.LOGWARNING)
 
@@ -290,8 +294,7 @@ def save_current_playback(context):
     path = profile_path(CURRENT_PLAYBACK_FILE)
     context["started"] = int(time.time())
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(context, handle, indent=2, sort_keys=True)
+        atomic_json_dump(path, context, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save current playback context: %s" % exc, xbmc.LOGWARNING)
 
@@ -332,11 +335,8 @@ def save_stream_contexts(data):
         if isinstance(value, dict) and now - safe_int(value.get("updated")) < STREAM_CONTEXT_TTL
     }
     path = profile_path(STREAM_CONTEXTS_FILE)
-    tmp_path = path + ".tmp"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump({"contexts": contexts}, handle, indent=2, sort_keys=True)
-        os.replace(tmp_path, path)
+        atomic_json_dump(path, {"contexts": contexts}, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save stream context: %s" % exc, xbmc.LOGWARNING)
 
@@ -395,11 +395,8 @@ def save_forwarder_tokens(data):
         if isinstance(value, dict) and now - safe_int(value.get("updated")) < 6 * 3600
     }
     path = profile_path(FORWARDER_TOKENS_FILE)
-    tmp_path = path + ".tmp"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump({"tokens": tokens}, handle, indent=2, sort_keys=True)
-        os.replace(tmp_path, path)
+        atomic_json_dump(path, {"tokens": tokens}, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save forwarder token: %s" % exc, xbmc.LOGWARNING)
 
@@ -535,8 +532,7 @@ def load_imdb_episode_scores():
 def save_imdb_episode_scores(data):
     path = profile_path(IMDB_EPISODE_SCORES_FILE)
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
+        atomic_json_dump(path, data, indent=2, sort_keys=True)
     except OSError as exc:
         xbmc.log("AIOStreams could not save IMDb episode scores: %s" % exc, xbmc.LOGWARNING)
 
@@ -731,7 +727,7 @@ def aiostreams_base():
 
 def get_manifest():
     base = aiometa_base()
-    return get_json(service_url(base + "/manifest.json", "aiometadata"))
+    return cached_service_json(base + "/manifest.json", "aiometadata", META_CACHE_TTL)
 
 
 def find_catalog(catalog_type, catalog_id):
@@ -1182,6 +1178,7 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
     metas = []
     page_count = 1 if search_query else max(1, min(setting_int("catalog_pages_per_page", 3), 10))
     current_skip = skip
+    reached_end = False
     for page_index in range(page_count):
         extra_path = catalog_extra(catalog, genre, current_skip, search_query)
         url = join_url(aiometa_base(), "catalog", catalog_type, catalog_id)
@@ -1200,6 +1197,7 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
 
         page_metas = response.get("metas", [])
         if not page_metas:
+            reached_end = True
             break
         metas.extend(page_metas)
         current_skip += len(page_metas)
@@ -1211,7 +1209,7 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
             continue
         add_video_item(enrich_meta(item_type, meta), item_type, item_id)
 
-    if metas and not search_query:
+    if metas and not search_query and not reached_end:
         add_directory("Next page", {
             "action": "catalog",
             "type": catalog_type,
