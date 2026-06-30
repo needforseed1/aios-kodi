@@ -1,5 +1,7 @@
 import json
+import http.client
 import os
+import re
 import socket
 import threading
 import time
@@ -21,6 +23,10 @@ FORWARDER_TOKENS_FILE = "forwarder_tokens.json"
 USER_AGENT = "AIOStreams/0.1 Kodi"
 PLAYBACK_HEADER_DENYLIST = {"range", "if-range", "content-range", "content-length"}
 CURRENT_PLAYBACK_TTL = 10 * 60
+FORWARDER_CHUNK_SIZE = 256 * 1024
+FORWARDER_READ_RETRIES = 3
+CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.I)
+RANGE_START_RE = re.compile(r"bytes=(\d+)-", re.I)
 
 
 class ForwarderServer(ThreadingHTTPServer):
@@ -96,9 +102,13 @@ def remove_resume_entry(key):
 def should_keep_resume(position, duration):
     if position < 60:
         return False
-    if duration and duration > 0 and position >= duration * 0.9:
+    if is_completed_resume(position, duration):
         return False
     return True
+
+
+def is_completed_resume(position, duration):
+    return bool(duration and duration > 0 and position >= duration * 0.9)
 
 
 def load_current_playback():
@@ -177,6 +187,35 @@ def copy_headers(handler, response):
         if value:
             handler.send_header(key, value)
     handler.send_header("Connection", "close")
+
+
+def range_start(value):
+    match = RANGE_START_RE.match(value or "")
+    return safe_int(match.group(1)) if match else None
+
+
+def response_body_bounds(response, request_headers):
+    content_range = response.headers.get("Content-Range") or ""
+    match = CONTENT_RANGE_RE.match(content_range)
+    if match:
+        return safe_int(match.group(1)), safe_int(match.group(2))
+
+    start = range_start(request_headers.get("Range")) or 0
+    content_length = safe_int(response.headers.get("Content-Length"))
+    if content_length > 0:
+        return start, start + content_length - 1
+    return start, None
+
+
+def retryable_read_error(exc):
+    return isinstance(exc, (
+        http.client.HTTPException,
+        OSError,
+        RuntimeError,
+        socket.timeout,
+        TimeoutError,
+        urllib.error.URLError,
+    ))
 
 
 def maybe_seek_resume(player, state, position, duration):
@@ -263,8 +302,11 @@ def record_resume(player, state):
         if should_keep_resume(position, duration):
             upsert_resume_entry(entry)
             xbmc.log("AIOStreams resume finalized at %ss/%ss" % (position, duration), xbmc.LOGINFO)
-        else:
+        elif is_completed_resume(position, duration):
             remove_resume_entry(active_key)
+            xbmc.log("AIOStreams resume cleared after completion at %ss/%ss" % (position, duration), xbmc.LOGINFO)
+        else:
+            xbmc.log("AIOStreams resume kept after early stop at %ss/%ss" % (position, duration), xbmc.LOGINFO)
         clear_current_playback()
     state["active_key"] = ""
     state["entry"] = None
@@ -328,7 +370,7 @@ class ForwarderHandler(BaseHTTPRequestHandler):
             copy_headers(self, response)
             self.end_headers()
             if not head_only:
-                self.copy_body(response)
+                self.copy_body(entry, headers, response)
 
     def fallback_head(self, entry, headers):
         headers = dict(headers)
@@ -345,15 +387,75 @@ class ForwarderHandler(BaseHTTPRequestHandler):
             copy_headers(self, response)
             self.end_headers()
 
-    def copy_body(self, response):
-        while True:
-            chunk = response.read(256 * 1024)
-            if not chunk:
-                break
-            try:
-                self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, socket.error):
-                break
+    def copy_body(self, entry, headers, response):
+        offset, expected_end = response_body_bounds(response, headers)
+        retries = 0
+        current_response = response
+        close_current = False
+        try:
+            while True:
+                read_error = None
+                chunk = b""
+                try:
+                    chunk = current_response.read(FORWARDER_CHUNK_SIZE)
+                except http.client.IncompleteRead as exc:
+                    chunk = exc.partial or b""
+                    read_error = exc
+                except (http.client.HTTPException, OSError, socket.timeout, TimeoutError, urllib.error.URLError) as exc:
+                    read_error = exc
+
+                if chunk:
+                    try:
+                        self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError, socket.error):
+                        return
+                    offset += len(chunk)
+
+                if read_error:
+                    xbmc.log("AIOStreams forwarder read interrupted at byte %s: %s" % (offset, read_error), xbmc.LOGWARNING)
+                elif not chunk:
+                    if expected_end is not None and offset <= expected_end:
+                        read_error = RuntimeError("upstream ended early at byte %s of %s" % (offset, expected_end + 1))
+                        xbmc.log("AIOStreams forwarder upstream ended early at byte %s of %s" % (offset, expected_end + 1), xbmc.LOGWARNING)
+                    else:
+                        return
+
+                if not read_error:
+                    continue
+                if not retryable_read_error(read_error) or retries >= FORWARDER_READ_RETRIES:
+                    xbmc.log("AIOStreams forwarder giving up at byte %s after %s retries" % (offset, retries), xbmc.LOGWARNING)
+                    return
+
+                retries += 1
+                retry_headers = dict(headers)
+                retry_headers["Range"] = "bytes=%d-" % offset
+                try:
+                    retry_request = urllib.request.Request(entry.get("url"), headers=retry_headers, method="GET")
+                    retry_response = urllib.request.urlopen(retry_request, timeout=30)
+                except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+                    xbmc.log("AIOStreams forwarder retry %s failed at byte %s: %s" % (retries, offset, exc), xbmc.LOGWARNING)
+                    continue
+
+                if offset > 0 and retry_response.getcode() != 206:
+                    xbmc.log("AIOStreams forwarder retry %s ignored Range at byte %s with HTTP %s" % (
+                        retries,
+                        offset,
+                        retry_response.getcode(),
+                    ), xbmc.LOGWARNING)
+                    retry_response.close()
+                    return
+
+                if close_current:
+                    current_response.close()
+                current_response = retry_response
+                close_current = True
+                _, retry_expected_end = response_body_bounds(current_response, retry_headers)
+                if retry_expected_end is not None:
+                    expected_end = retry_expected_end
+                xbmc.log("AIOStreams forwarder resumed upstream at byte %s retry=%s" % (offset, retries), xbmc.LOGINFO)
+        finally:
+            if close_current:
+                current_response.close()
 
 
 def run():

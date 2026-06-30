@@ -66,6 +66,7 @@ SEARCH_CACHE_FILE = "search_cache.json"
 API_CACHE_FILE = "api_cache.json"
 IMDB_EPISODE_SCORES_FILE = "imdb_episode_scores.json"
 FORWARDER_TOKENS_FILE = "forwarder_tokens.json"
+STREAM_CONTEXTS_FILE = "stream_contexts.json"
 CREDENTIALS_FILE = "credentials.json"
 IMDB_GRAPHQL_URL = "https://api.graphql.imdb.com/"
 IMDB_SCORE_REFRESH_RECENT = 24 * 3600
@@ -73,6 +74,7 @@ IMDB_SCORE_REFRESH_CURRENT = 3 * 24 * 3600
 IMDB_SCORE_REFRESH_OLD = 30 * 24 * 3600
 SEARCH_CACHE_TTL = 30 * 60
 META_CACHE_TTL = 30 * 60
+STREAM_CONTEXT_TTL = 6 * 3600
 PLAYBACK_HEADER_DENYLIST = {"range", "if-range", "content-range", "content-length"}
 
 views.init(ADDON, HANDLE, VIEW_SECTIONS, VIEW_CANDIDATES)
@@ -304,6 +306,69 @@ def load_current_playback():
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def load_stream_contexts():
+    path = profile_path(STREAM_CONTEXTS_FILE)
+    if not os.path.exists(path):
+        return {"contexts": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {"contexts": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("contexts"), dict):
+        return {"contexts": {}}
+    return data
+
+
+def save_stream_contexts(data):
+    now = int(time.time())
+    contexts = data.get("contexts") if isinstance(data, dict) else {}
+    if not isinstance(contexts, dict):
+        contexts = {}
+    contexts = {
+        key: value for key, value in contexts.items()
+        if isinstance(value, dict) and now - safe_int(value.get("updated")) < STREAM_CONTEXT_TTL
+    }
+    path = profile_path(STREAM_CONTEXTS_FILE)
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump({"contexts": contexts}, handle, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        xbmc.log("AIOStreams could not save stream context: %s" % exc, xbmc.LOGWARNING)
+
+
+def stream_context_token():
+    return base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+
+
+def register_stream_context(context, data=None, save=True):
+    data = data or load_stream_contexts()
+    contexts = data.setdefault("contexts", {})
+    token = stream_context_token()
+    while token in contexts:
+        token = stream_context_token()
+    stored = dict(context)
+    stored["headers"] = sanitize_playback_headers(stored.get("headers") or {})
+    stored["updated"] = int(time.time())
+    contexts[token] = stored
+    if save:
+        save_stream_contexts(data)
+    return token
+
+
+def load_stream_context(token):
+    if not token:
+        return {}
+    entry = load_stream_contexts().get("contexts", {}).get(token)
+    if not isinstance(entry, dict):
+        return {}
+    if int(time.time()) - safe_int(entry.get("updated")) > STREAM_CONTEXT_TTL:
+        return {}
+    return entry
 
 
 def load_forwarder_tokens():
@@ -1679,27 +1744,33 @@ def list_streams(item_type, item_id, content_title="", content_art_json=""):
     streams = response.get("streams", [])
     content_art = art_from_json(content_art_json)
     playable_count = 0
+    stream_contexts = load_stream_contexts()
     for index, stream in enumerate(streams, start=1):
         stream_url = stream.get("url") or stream.get("externalUrl")
         label = stream_label(stream, index)
         info = {"title": label, "plot": stream_plot(stream)}
         if stream_url and stream_url.startswith(("http://", "https://")):
             playable_count += 1
-            add_playable(label, {
-                "action": "play",
+            token = register_stream_context({
                 "url": stream_url,
-                "headers": json.dumps(stream_headers(stream)),
+                "headers": stream_headers(stream),
                 "item_id": item_id,
                 "item_type": item_type,
                 "title": content_title or item_id,
                 "stream_title": label,
-                "art": art_json(content_art),
+                "art": content_art,
+            }, stream_contexts, save=False)
+            add_playable(label, {
+                "action": "play_token",
+                "token": token,
             }, art=fallback_art("sources"), info=info)
         else:
             add_directory("Unsupported: " + label, {"action": "noop"}, art=fallback_art("sources"), info=info)
 
     if not playable_count:
         notify("No direct playable HTTP streams returned")
+    else:
+        save_stream_contexts(stream_contexts)
     set_view("videos", "view_sources", cache_to_disc=False)
 
 
@@ -1819,6 +1890,19 @@ def play(url, headers_json, resume_seconds=0, context=None):
     xbmcplugin.setResolvedUrl(HANDLE, True, item)
 
 
+def play_token(token, resume_seconds=0):
+    context = load_stream_context(token)
+    if not context:
+        error("Playback link expired; open Sources again")
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        return
+    url = context.get("url") or ""
+    headers = context.get("headers") if isinstance(context.get("headers"), dict) else {}
+    if not resume_seconds:
+        resume_seconds = safe_int(context.get("resume"))
+    play(url, json.dumps(headers), resume_seconds, context)
+
+
 def should_keep_resume(position, duration):
     if position < 60:
         return False
@@ -1864,6 +1948,7 @@ def list_resume():
         add_directory("No resumable items", {"action": "noop"}, fallback_art("sources"), {"title": "No resumable items"})
         set_view("videos")
         return
+    stream_contexts = load_stream_contexts()
     for entry in entries:
         position = safe_int(entry.get("position"))
         duration = safe_int(entry.get("duration"))
@@ -1874,19 +1959,24 @@ def list_resume():
             info["mediatype"] = "episode"
         if duration:
             info["duration"] = duration
-        add_playable(label, {
-            "action": "resume_play",
+        token = register_stream_context({
             "url": entry.get("url") or "",
-            "headers": json.dumps(entry.get("headers") or {}),
-            "resume": str(position),
-            "duration": str(duration),
+            "headers": entry.get("headers") or {},
+            "resume": position,
+            "duration": duration,
             "title": entry.get("title") or "",
             "stream_title": entry.get("stream_title") or "",
             "item_id": entry.get("item_id") or "",
             "item_type": entry.get("item_type") or "",
             "key": entry.get("key") or "",
-            "art": art_json(entry_art),
+            "art": entry_art,
+        }, stream_contexts, save=False)
+        add_playable(label, {
+            "action": "play_token",
+            "token": token,
+            "resume": str(position),
         }, art=entry_art, info=info)
+    save_stream_contexts(stream_contexts)
     set_view("episodes", "view_episodes", cache_to_disc=False)
 
 
@@ -2092,6 +2182,8 @@ def route():
             "duration": safe_int(params.get("duration")),
             "art": art_from_json(params.get("art", "")),
         })
+    elif action == "play_token":
+        play_token(params.get("token", ""), safe_int(params.get("resume")))
     elif action == "resume":
         list_resume()
     elif action == "resume_play":
