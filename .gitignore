@@ -1,10 +1,10 @@
 __pycache__/
 *.pyc
 *.pyo
-*.zip
 
 credentials.json
 
+builds/
 aios-debug/
 backups/
 
