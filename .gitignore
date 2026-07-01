@@ -8,5 +8,7 @@ builds/
 aios-debug/
 backups/
 
+.pytest_cache/
+
 .DS_Store
 Thumbs.db

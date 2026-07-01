@@ -1,0 +1,113 @@
+# Kodi Media Center language file
+# Addon Name: AIOStreams for Kodi
+# Addon id: plugin.video.aiostreams
+# Addon Provider: OpenCode
+msgid ""
+msgstr ""
+"Project-Id-Version: plugin.video.aiostreams\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-02 00:00+0000\n"
+"PO-Revision-Date: 2026-07-02 00:00+0000\n"
+"Last-Translator: Kodi Translation Team\n"
+"Language-Team: English (United Kingdom)\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "#30000"
+msgid "General"
+msgstr ""
+
+msgctxt "#30001"
+msgid "Connection"
+msgstr ""
+
+msgctxt "#30002"
+msgid "Playback"
+msgstr ""
+
+msgctxt "#30003"
+msgid "Metadata and search"
+msgstr ""
+
+msgctxt "#30004"
+msgid "Views"
+msgstr ""
+
+msgctxt "#30010"
+msgid "AIOStreams manifest URL"
+msgstr ""
+
+msgctxt "#30011"
+msgid "Refresh AIOStreams"
+msgstr ""
+
+msgctxt "#30012"
+msgid "AIOStreams refresh token"
+msgstr ""
+
+msgctxt "#30013"
+msgid "AIOMetadata manifest URL (optional; blank uses Cinemeta)"
+msgstr ""
+
+msgctxt "#30014"
+msgid "Refresh metadata"
+msgstr ""
+
+msgctxt "#30015"
+msgid "AIOMetadata refresh token"
+msgstr ""
+
+msgctxt "#30016"
+msgid "Request timeout in seconds"
+msgstr ""
+
+msgctxt "#30020"
+msgid "Use local playback forwarder"
+msgstr ""
+
+msgctxt "#30021"
+msgid "Local forwarder port (restart Kodi after changing)"
+msgstr ""
+
+msgctxt "#30030"
+msgid "Enable IMDb episode scores"
+msgstr ""
+
+msgctxt "#30031"
+msgid "Catalog provider pages per Kodi page"
+msgstr ""
+
+msgctxt "#30032"
+msgid "Search result limit"
+msgstr ""
+
+msgctxt "#30040"
+msgid "View apply delay in milliseconds"
+msgstr ""
+
+msgctxt "#30041"
+msgid "Main addon list view ID (use View Mode Setup)"
+msgstr ""
+
+msgctxt "#30042"
+msgid "Catalog results view ID (use View Mode Setup)"
+msgstr ""
+
+msgctxt "#30043"
+msgid "Search results view ID (use View Mode Setup)"
+msgstr ""
+
+msgctxt "#30044"
+msgid "Season folders view ID (use View Mode Setup)"
+msgstr ""
+
+msgctxt "#30045"
+msgid "Episode list view ID (use View Mode Setup)"
+msgstr ""
+
+msgctxt "#30046"
+msgid "Source results view ID (use View Mode Setup)"
+msgstr ""

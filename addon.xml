@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.aiostreams" name="AIOStreams for Kodi" version="0.1.75" provider-name="OpenCode">
+<addon id="plugin.video.aiostreams" name="AIOStreams for Kodi" version="0.1.76" provider-name="OpenCode">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
   </requires>
@@ -12,5 +12,9 @@
     <description lang="en_GB">Kodi bridge for AIOMetadata or Cinemeta catalogs/search/metadata and AIOStreams stream links.</description>
     <platform>all</platform>
     <license>GPL-3.0</license>
+    <assets>
+      <icon>resources/media/icon.png</icon>
+      <fanart>resources/media/search_default_landscape_v2.png</fanart>
+    </assets>
   </extension>
 </addon>

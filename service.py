@@ -23,6 +23,8 @@ FORWARDER_TOKENS_FILE = "forwarder_tokens.json"
 USER_AGENT = "AIOStreams/0.1 Kodi"
 PLAYBACK_HEADER_DENYLIST = {"range", "if-range", "content-range", "content-length"}
 CURRENT_PLAYBACK_TTL = 10 * 60
+RESUME_SAVE_INTERVAL = 30
+CONTEXT_CHECK_INTERVAL = 2
 FORWARDER_CHUNK_SIZE = 256 * 1024
 FORWARDER_READ_RETRIES = 3
 CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.I)
@@ -259,20 +261,26 @@ def maybe_seek_resume(player, state, position, duration):
 
 def record_resume(player, state):
     if player.isPlaying():
-        context = load_current_playback()
-        if fresh_context(context):
-            next_entry = entry_from_context(context)
-            if next_entry.get("key") and next_entry.get("key") != state.get("active_key"):
-                state["active_key"] = next_entry.get("key")
-                state["entry"] = next_entry
-                state["last_save"] = 0
-                state["resume_at"] = safe_int(context.get("resume"))
-                state["resume_seek_done"] = False
-                state["resume_seek_started"] = 0
-                state["resume_last_seek"] = 0
-                state["resume_seek_attempts"] = 0
-                state["last_position"] = 0
-                xbmc.log("AIOStreams resume tracking started: %s" % next_entry.get("title"), xbmc.LOGINFO)
+        # Reading the context file 4x/second wears flash for nothing; poll
+        # fast only until an entry is picked up, then every couple seconds
+        # to catch playlist advances.
+        now = time.time()
+        if state.get("entry") is None or now - float(state.get("last_context_check") or 0) >= CONTEXT_CHECK_INTERVAL:
+            state["last_context_check"] = now
+            context = load_current_playback()
+            if fresh_context(context):
+                next_entry = entry_from_context(context)
+                if next_entry.get("key") and next_entry.get("key") != state.get("active_key"):
+                    state["active_key"] = next_entry.get("key")
+                    state["entry"] = next_entry
+                    state["last_save"] = 0
+                    state["resume_at"] = safe_int(context.get("resume"))
+                    state["resume_seek_done"] = False
+                    state["resume_seek_started"] = 0
+                    state["resume_last_seek"] = 0
+                    state["resume_seek_attempts"] = 0
+                    state["last_position"] = 0
+                    xbmc.log("AIOStreams resume tracking started: %s" % next_entry.get("title"), xbmc.LOGINFO)
 
         entry = state.get("entry")
         if not entry:
@@ -293,7 +301,11 @@ def record_resume(player, state):
         last_position = safe_int(state.get("last_position"))
         position_jump = last_position and abs(position - last_position) >= 30
         state["last_position"] = position
-        if position_jump or now - float(state.get("last_save") or 0) >= 2:
+        # In-memory entry tracks every tick; the on-disk rewrite is throttled
+        # to spare flash. Seeks flush immediately, and stop/exit finalizes
+        # below, so at most RESUME_SAVE_INTERVAL of linear playback is lost
+        # on a hard crash.
+        if position_jump or now - float(state.get("last_save") or 0) >= RESUME_SAVE_INTERVAL:
             if should_keep_resume(position, resume_duration):
                 upsert_resume_entry(entry)
                 xbmc.log("AIOStreams resume saved at %ss/%ss" % (position, resume_duration), xbmc.LOGDEBUG)
@@ -471,6 +483,7 @@ def run():
         "active_key": "",
         "entry": None,
         "last_save": 0,
+        "last_context_check": 0,
         "resume_at": 0,
         "resume_seek_done": False,
         "resume_seek_started": 0,

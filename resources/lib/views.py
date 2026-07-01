@@ -1,3 +1,4 @@
+import json
 import os
 import re
 
@@ -14,6 +15,8 @@ VIEW_SECTIONS = ()
 VIEW_CANDIDATES = ()
 AIOS_FORCED_VIEW_PROPERTY = "aios_forced_view"
 AIOS_FORCED_VIEW_ID_PROPERTY = "aios_forced_view_id"
+SKIN_CACHE_FILE = "skin_views.json"
+_SKIN_CACHE = None
 
 
 def init(addon, handle, view_sections, view_candidates):
@@ -40,6 +43,57 @@ def safe_int(value, default=0):
         return int(value or default)
     except (TypeError, ValueError):
         return default
+
+
+def profile_path(filename):
+    profile = xbmcvfs.translatePath(ADDON.getAddonInfo("profile"))
+    if not os.path.isdir(profile):
+        os.makedirs(profile, exist_ok=True)
+    return os.path.join(profile, filename)
+
+
+def skin_cache_key():
+    version = ""
+    skin_addon = active_skin_addon()
+    if skin_addon:
+        try:
+            version = skin_addon.getAddonInfo("version") or ""
+        except Exception:
+            version = ""
+    return "%s|%s" % (xbmc.getSkinDir(), version)
+
+
+def skin_cache():
+    # Scanning every skin XML per directory render is far too slow on ARM
+    # boxes, so scan results are memoized per skin id+version.
+    global _SKIN_CACHE
+    if _SKIN_CACHE is not None:
+        return _SKIN_CACHE
+    data = {}
+    try:
+        with open(profile_path(SKIN_CACHE_FILE), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or data.get("key") != skin_cache_key():
+        data = {"key": skin_cache_key(), "type_labels": {}}
+    if not isinstance(data.get("type_labels"), dict):
+        data["type_labels"] = {}
+    _SKIN_CACHE = data
+    return data
+
+
+def save_skin_cache():
+    if _SKIN_CACHE is None:
+        return
+    path = profile_path(SKIN_CACHE_FILE)
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(_SKIN_CACHE, handle, separators=(",", ":"))
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        xbmc.log("AIOStreams could not save skin view cache: %s" % exc, xbmc.LOGWARNING)
 
 
 def set_view(content="videos", view_setting="", cache_to_disc=True, fallback_view_setting=""):
@@ -75,6 +129,16 @@ def set_skin_view_hint(view_mode):
 
 
 def skin_view_hint_supported():
+    cache = skin_cache()
+    if isinstance(cache.get("hint_supported"), bool):
+        return cache["hint_supported"]
+    supported = scan_skin_view_hint_supported()
+    cache["hint_supported"] = supported
+    save_skin_cache()
+    return supported
+
+
+def scan_skin_view_hint_supported():
     skin_path = xbmcvfs.translatePath("special://skin/")
     try:
         for root, _dirs, files in os.walk(skin_path):
@@ -103,6 +167,18 @@ def skin_view_mode_label(view_mode):
 def skin_view_type_label(view_id):
     if view_id <= 0:
         return ""
+    cache = skin_cache()
+    labels = cache["type_labels"]
+    key = str(view_id)
+    if key in labels:
+        return str(labels[key])
+    label = scan_skin_view_type_label(view_id)
+    labels[key] = label
+    save_skin_cache()
+    return label
+
+
+def scan_skin_view_type_label(view_id):
     skin_path = xbmcvfs.translatePath("special://skin/")
     skin_addon = active_skin_addon()
     try:
@@ -261,6 +337,21 @@ def view_section(setting_id):
 
 
 def skin_view_modes():
+    cache = skin_cache()
+    stored = cache.get("modes")
+    if isinstance(stored, list):
+        return [
+            (safe_int(item[0]), str(item[1]))
+            for item in stored
+            if isinstance(item, (list, tuple)) and len(item) == 2
+        ]
+    modes = scan_skin_view_modes()
+    cache["modes"] = [[view_id, label] for view_id, label in modes]
+    save_skin_cache()
+    return modes
+
+
+def scan_skin_view_modes():
     modes = {}
     skin_path = xbmcvfs.translatePath("special://skin/")
     xml_path = os.path.join(skin_path, "xml")

@@ -1,4 +1,5 @@
 import base64
+import concurrent.futures
 import html
 import hashlib
 import json
@@ -6,6 +7,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -77,6 +79,7 @@ IMDB_SCORE_REFRESH_OLD = 30 * 24 * 3600
 SEARCH_CACHE_TTL = 30 * 60
 META_CACHE_TTL = 30 * 60
 STREAM_CONTEXT_TTL = 6 * 3600
+STREAM_CONTEXT_LIMIT = 300
 PLAYBACK_HEADER_DENYLIST = {"range", "if-range", "content-range", "content-length"}
 
 views.init(ADDON, HANDLE, VIEW_SECTIONS, VIEW_CANDIDATES)
@@ -187,31 +190,6 @@ def load_resume_entries():
     return [entry for entry in entries if isinstance(entry, dict)]
 
 
-def save_resume_entries(entries):
-    path = profile_path(RESUME_FILE)
-    entries = sorted(entries, key=lambda item: item.get("updated", 0), reverse=True)[:50]
-    try:
-        atomic_json_dump(path, {"entries": entries}, indent=2, sort_keys=True)
-    except OSError as exc:
-        xbmc.log("AIOStreams could not save resume history: %s" % exc, xbmc.LOGWARNING)
-
-
-def resume_key(url, item_id="", stream_title=""):
-    value = "%s|%s|%s" % (item_id, stream_title, url)
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()
-
-
-def upsert_resume_entry(entry):
-    entries = [item for item in load_resume_entries() if item.get("key") != entry.get("key")]
-    entry["updated"] = int(time.time())
-    entries.insert(0, entry)
-    save_resume_entries(entries)
-
-
-def remove_resume_entry(key):
-    save_resume_entries([item for item in load_resume_entries() if item.get("key") != key])
-
-
 def load_search_cache():
     path = profile_path(SEARCH_CACHE_FILE)
     if not os.path.exists(path):
@@ -269,26 +247,64 @@ def save_api_cache(data):
         kept[key] = entry
     path = profile_path(API_CACHE_FILE)
     try:
-        atomic_json_dump(path, {"entries": kept}, indent=2, sort_keys=True)
+        atomic_json_dump(path, {"entries": kept}, separators=(",", ":"))
     except OSError as exc:
         xbmc.log("AIOStreams could not save API cache: %s" % exc, xbmc.LOGWARNING)
 
 
+_API_CACHE = None
+_API_CACHE_DIRTY = False
+_API_CACHE_LOCK = threading.Lock()
+
+
+def api_cache_data():
+    global _API_CACHE
+    with _API_CACHE_LOCK:
+        if _API_CACHE is None:
+            _API_CACHE = load_api_cache()
+        return _API_CACHE
+
+
+def flush_api_cache():
+    global _API_CACHE_DIRTY
+    with _API_CACHE_LOCK:
+        if not _API_CACHE_DIRTY or _API_CACHE is None:
+            return
+        data = _API_CACHE
+        _API_CACHE_DIRTY = False
+    save_api_cache(data)
+
+
 def clear_api_cache():
+    global _API_CACHE, _API_CACHE_DIRTY
+    with _API_CACHE_LOCK:
+        _API_CACHE = {"entries": {}}
+        _API_CACHE_DIRTY = False
     save_api_cache({"entries": {}})
 
 
 def cached_service_json(url, service, ttl):
+    global _API_CACHE_DIRTY
     final_url = service_url(url, service)
     key = hashlib.sha1(final_url.encode("utf-8")).hexdigest()
-    cache = load_api_cache()
-    entry = cache.get("entries", {}).get(key, {})
-    if entry and int(time.time()) - safe_int(entry.get("updated")) <= ttl and isinstance(entry.get("data"), dict):
-        return entry.get("data")
+    cache = api_cache_data()
+    with _API_CACHE_LOCK:
+        entry = cache.get("entries", {}).get(key, {})
+        if entry and int(time.time()) - safe_int(entry.get("updated")) <= ttl and isinstance(entry.get("data"), dict):
+            return entry.get("data")
     data = get_json(final_url)
-    cache.setdefault("entries", {})[key] = {"updated": int(time.time()), "ttl": ttl, "data": data}
-    save_api_cache(cache)
+    with _API_CACHE_LOCK:
+        cache.setdefault("entries", {})[key] = {"updated": int(time.time()), "ttl": ttl, "data": data}
+        _API_CACHE_DIRTY = True
     return data
+
+
+def parallel_map(func, items, max_workers=8):
+    items = list(items)
+    if len(items) <= 1:
+        return [func(item) for item in items]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+        return list(pool.map(func, items))
 
 
 def search_cache_key(search_type, query):
@@ -332,18 +348,6 @@ def save_current_playback(context):
         xbmc.log("AIOStreams could not save current playback context: %s" % exc, xbmc.LOGWARNING)
 
 
-def load_current_playback():
-    path = profile_path(CURRENT_PLAYBACK_FILE)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def load_stream_contexts():
     path = profile_path(STREAM_CONTEXTS_FILE)
     if not os.path.exists(path):
@@ -367,6 +371,9 @@ def save_stream_contexts(data):
         key: value for key, value in contexts.items()
         if isinstance(value, dict) and now - safe_int(value.get("updated")) < STREAM_CONTEXT_TTL
     }
+    if len(contexts) > STREAM_CONTEXT_LIMIT:
+        newest = sorted(contexts.items(), key=lambda item: safe_int(item[1].get("updated")), reverse=True)
+        contexts = dict(newest[:STREAM_CONTEXT_LIMIT])
     path = profile_path(STREAM_CONTEXTS_FILE)
     try:
         atomic_json_dump(path, {"contexts": contexts}, indent=2, sort_keys=True)
@@ -382,8 +389,6 @@ def register_stream_context(context, data=None, save=True):
     data = data or load_stream_contexts()
     contexts = data.setdefault("contexts", {})
     token = stream_context_token()
-    while token in contexts:
-        token = stream_context_token()
     stored = dict(context)
     stored["headers"] = sanitize_playback_headers(stored.get("headers") or {})
     stored["updated"] = int(time.time())
@@ -511,17 +516,24 @@ def join_url(base, *parts):
     return base.rstrip("/") + "/" + path
 
 
+def redact_url(url):
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if not parsed.scheme or not parsed.netloc:
+        return str(url or "")
+    return "%s://%s/..." % (parsed.scheme, parsed.netloc)
+
+
 def get_json(url):
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=setting_int("request_timeout", 25)) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RuntimeError("HTTP %s from %s" % (exc.code, url))
+        raise RuntimeError("HTTP %s from %s" % (exc.code, redact_url(url)))
     except urllib.error.URLError as exc:
         raise RuntimeError("Network error: %s" % exc.reason)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise RuntimeError("Invalid JSON from %s: %s" % (url, exc))
+        raise RuntimeError("Invalid JSON from %s: %s" % (redact_url(url), exc))
 
 
 def with_query_param(url, key, value):
@@ -718,6 +730,28 @@ def queue_imdb_show_scores(item_type, item_id):
         xbmc.log("AIOStreams could not queue IMDb episode score refresh: %s" % exc, xbmc.LOGWARNING)
 
 
+def queue_imdb_season_scores(item_type, item_id, season):
+    try:
+        xbmc.executebuiltin("RunPlugin(%s)" % addon_url(action="imdb_refresh_season", type=item_type, id=item_id, season=season))
+    except Exception as exc:
+        xbmc.log("AIOStreams could not queue IMDb season score refresh: %s" % exc, xbmc.LOGWARNING)
+
+
+def refresh_imdb_season_worker(item_type, item_id, season):
+    if not imdb_episode_scores_enabled() or not item_id:
+        return
+    url = join_url(aiometa_base(), "meta", item_type, item_id) + ".json"
+    try:
+        response = cached_service_json(url, "aiometadata", META_CACHE_TTL)
+    except RuntimeError as exc:
+        xbmc.log("AIOStreams IMDb season refresh could not load metadata for %s: %s" % (item_id, exc), xbmc.LOGWARNING)
+        return
+    meta = response.get("meta") or {}
+    imdb_id = tvmaze_imdb_id(meta, item_id)
+    if imdb_id:
+        refresh_imdb_season_scores(imdb_id, season)
+
+
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -727,18 +761,29 @@ def resolve_playback_redirect(url, headers=None):
     request_headers = sanitize_playback_headers(headers)
     if not any(str(key).lower() == "user-agent" for key in request_headers):
         request_headers["User-Agent"] = USER_AGENT
-    request = urllib.request.Request(url, headers=request_headers)
     opener = urllib.request.build_opener(NoRedirectHandler)
-    try:
-        opener.open(request, timeout=setting_int("request_timeout", 25)).close()
-    except urllib.error.HTTPError as exc:
-        if exc.code in (301, 302, 303, 307, 308):
-            location = exc.headers.get("Location")
-            if location:
-                return urllib.parse.urljoin(url, location)
-        raise RuntimeError("HTTP %s from %s" % (exc.code, url))
-    except urllib.error.URLError as exc:
-        raise RuntimeError("Network error: %s" % exc.reason)
+    timeout = setting_int("request_timeout", 25)
+    # Probe with HEAD first so upstream never starts streaming (or burning a
+    # one-shot debrid link); fall back to a 1-byte ranged GET for servers that
+    # reject HEAD outright.
+    for method, byte_range in (("HEAD", ""), ("GET", "bytes=0-0")):
+        attempt_headers = dict(request_headers)
+        if byte_range:
+            attempt_headers["Range"] = byte_range
+        request = urllib.request.Request(url, headers=attempt_headers, method=method)
+        try:
+            opener.open(request, timeout=timeout).close()
+            return url
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location")
+                if location:
+                    return urllib.parse.urljoin(url, location)
+            if method == "HEAD":
+                continue
+            raise RuntimeError("HTTP %s from %s" % (exc.code, redact_url(url)))
+        except urllib.error.URLError as exc:
+            raise RuntimeError("Network error: %s" % exc.reason)
     return url
 
 
@@ -803,17 +848,64 @@ def add_playable(label, params, art=None, info=None):
 
 
 def set_item_info(item, info):
+    rating = display_rating(info.get("imdbRating") or info.get("rating"))
+    votes = safe_int(info.get("imdbVotes") or info.get("votes"))
+    tag = video_info_tag(item)
+    if tag is not None:
+        apply_info_tag(tag, info, rating, votes)
+        return
+    # Kodi 19 fallback: InfoTagVideo has no setters there.
     video_info = dict(info)
     video_info.pop("imdbVotes", None)
     item.setInfo("video", video_info)
-    rating = display_rating(info.get("imdbRating") or info.get("rating"))
     if not rating:
         return
     try:
-        votes = safe_int(info.get("imdbVotes") or info.get("votes"))
         item.setRating("imdb", float(rating), votes, True)
     except (AttributeError, TypeError, ValueError):
         pass
+
+
+def video_info_tag(item):
+    try:
+        tag = item.getVideoInfoTag()
+    except (AttributeError, RuntimeError):
+        return None
+    return tag if hasattr(tag, "setTitle") else None
+
+
+def apply_info_tag(tag, info, rating, votes):
+    for key, setter_name, convert in (
+        ("title", "setTitle", str),
+        ("plot", "setPlot", str),
+        ("plotoutline", "setPlotOutline", str),
+        ("tvshowtitle", "setTvShowTitle", str),
+        ("mediatype", "setMediaType", str),
+        ("aired", "setFirstAired", str),
+        ("premiered", "setPremiered", str),
+        ("duration", "setDuration", int),
+        ("year", "setYear", int),
+        ("season", "setSeason", int),
+        ("episode", "setEpisode", int),
+    ):
+        value = info.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            getattr(tag, setter_name)(convert(value))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    genres = info.get("genre")
+    if genres:
+        try:
+            tag.setGenres([str(genre) for genre in genres] if isinstance(genres, list) else [str(genres)])
+        except (AttributeError, TypeError, ValueError):
+            pass
+    if rating:
+        try:
+            tag.setRating(float(rating), votes, "imdb", True)
+        except (AttributeError, TypeError, ValueError):
+            pass
 
 
 def set_item_art(item, art):
@@ -1242,12 +1334,16 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
         metas.extend(page_metas)
         current_skip += len(page_metas)
 
+    typed_metas = []
     for meta in metas:
         item_type = meta.get("type") or catalog_type
         item_id = meta.get("id")
         if not item_id:
             continue
-        add_video_item(enrich_meta(item_type, meta), item_type, item_id)
+        typed_metas.append((item_type, item_id, meta))
+    enriched_metas = parallel_map(lambda entry: enrich_meta(entry[0], entry[2]), typed_metas)
+    for (item_type, item_id, _meta), enriched in zip(typed_metas, enriched_metas):
+        add_video_item(enriched, item_type, item_id)
 
     if metas and not search_query and not reached_end:
         add_directory("Next page", {
@@ -1317,15 +1413,17 @@ def list_episodes(item_type, item_id, season):
     imdb_id = tvmaze_imdb_id(meta, item_id) if item_type == "series" else ""
     imdb_scores = load_imdb_episode_scores() if imdb_episode_scores_enabled() and imdb_id else {"shows": {}}
     if imdb_episode_scores_enabled() and imdb_id and imdb_cache_stale(imdb_scores, imdb_id, season, videos):
-        refresh_imdb_season_scores(imdb_id, season)
-        imdb_scores = load_imdb_episode_scores()
+        queue_imdb_season_scores(item_type, item_id, season)
     tvmaze_fallbacks = {}
     if item_type == "series" and any(episode_needs_fallback(video) for video in videos):
         tvmaze_fallbacks = tvmaze_episode_fallbacks(meta, item_id, season)
 
-    for video in videos:
-        video = merge_episode_fallback(video, tvmaze_fallbacks.get(video_episode(video) or ""))
-        video = enrich_episode_meta(item_type, video)
+    merged_videos = [
+        merge_episode_fallback(video, tvmaze_fallbacks.get(video_episode(video) or ""))
+        for video in videos
+    ]
+    enriched_videos = parallel_map(lambda video: enrich_episode_meta(item_type, video), merged_videos)
+    for video in enriched_videos:
         video = apply_imdb_episode_score(video, imdb_scores, imdb_id, season)
         video_id = video.get("id")
         if not video_id:
@@ -1335,7 +1433,6 @@ def list_episodes(item_type, item_id, season):
         label = episode_title
         if episode and not str(label).lower().startswith("episode"):
             label = "%s. %s" % (episode, label)
-        label = episode_label(label, video)
         show_title = meta.get("name") or meta.get("title") or item_id
         content_title = resume_episode_title(show_title, season, episode, episode_title)
         info = episode_info(video, meta, season, episode)
@@ -1429,10 +1526,6 @@ def season_info(series_meta, season):
     if str(season).isdigit():
         info["season"] = int(season)
     return info
-
-
-def episode_label(label, video):
-    return label
 
 
 def resume_episode_title(show_title, season, episode, episode_title):
@@ -1840,10 +1933,18 @@ def playback_url_and_headers(original_url, resolved_url, headers):
             resolved_parts.fragment,
         ))
 
-    playback_headers.setdefault("Cache-Control", "no-cache")
-    playback_headers.setdefault("Pragma", "no-cache")
-    playback_headers.setdefault("Connection", "close")
     return resolved_url, playback_headers
+
+
+def kodi_builtin_headers(headers):
+    # Cache-busters and Connection: close work around Kodi's CCurlFile
+    # handle-pool reuse; they must not leak into the forwarder's upstream
+    # requests where they would defeat keep-alive across Range retries.
+    merged = dict(headers)
+    merged.setdefault("Cache-Control", "no-cache")
+    merged.setdefault("Pragma", "no-cache")
+    merged.setdefault("Connection", "close")
+    return merged
 
 
 def playback_mime(url, title=""):
@@ -1879,7 +1980,7 @@ def play(url, headers_json, resume_seconds=0, context=None):
     try:
         resolved_url = resolve_playback_redirect(url, headers)
     except RuntimeError as exc:
-        xbmc.log("AIOStreams playback resolve failed for %s: %s" % (url, exc), xbmc.LOGERROR)
+        xbmc.log("AIOStreams playback resolve failed for %s: %s" % (redact_url(url), exc), xbmc.LOGERROR)
         error(str(exc))
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
@@ -1898,10 +1999,10 @@ def play(url, headers_json, resume_seconds=0, context=None):
             xbmc.log("AIOStreams playback engine: local-forwarder", xbmc.LOGINFO)
         except Exception as exc:
             xbmc.log("AIOStreams local forwarder registration failed, using direct playback: %s" % exc, xbmc.LOGWARNING)
-            item_path = kodi_header_url(playback_url, playback_headers)
+            item_path = kodi_header_url(playback_url, kodi_builtin_headers(playback_headers))
             xbmc.log("AIOStreams playback engine: kodi-builtin", xbmc.LOGINFO)
     else:
-        item_path = kodi_header_url(playback_url, playback_headers)
+        item_path = kodi_header_url(playback_url, kodi_builtin_headers(playback_headers))
         xbmc.log("AIOStreams playback engine: kodi-builtin", xbmc.LOGINFO)
     item = xbmcgui.ListItem(path=item_path)
     item.setPath(item_path)
@@ -1922,7 +2023,7 @@ def play(url, headers_json, resume_seconds=0, context=None):
         except Exception:
             pass
     if context.get("title"):
-        item.setInfo("video", {"title": context.get("title")})
+        set_item_info(item, {"title": context.get("title")})
     if context:
         save_current_playback(dict(context, url=url, headers=headers, resume=resume_seconds))
     xbmcplugin.setResolvedUrl(HANDLE, True, item)
@@ -2071,6 +2172,7 @@ def search(search_type="", query=""):
         except RuntimeError as exc:
             errors.append(str(exc))
             continue
+        batch = []
         for meta in response.get("metas", []):
             item_id = meta.get("id")
             item_type = meta.get("type") or catalog.get("type")
@@ -2080,11 +2182,13 @@ def search(search_type="", query=""):
             if key in seen:
                 continue
             seen.add(key)
-            enriched = enrich_meta(item_type, meta)
+            batch.append((item_type, item_id, meta))
+            if len(results) + len(batch) >= result_limit:
+                break
+        enriched_batch = parallel_map(lambda entry: enrich_meta(entry[0], entry[2]), batch)
+        for (item_type, item_id, _meta), enriched in zip(batch, enriched_batch):
             results.append({"type": item_type, "id": item_id, "meta": enriched})
             add_video_item(enriched, item_type, item_id, search_result_art(enriched, item_type))
-            if len(results) >= result_limit:
-                break
         if len(results) >= result_limit:
             break
     if results:
@@ -2194,6 +2298,13 @@ def runtime_seconds(value):
 
 
 def route():
+    try:
+        dispatch()
+    finally:
+        flush_api_cache()
+
+
+def dispatch():
     params = dict(urllib.parse.parse_qsl(sys.argv[2][1:]))
     action = params.get("action", "root")
     if action == "settings":
@@ -2212,6 +2323,8 @@ def route():
         refresh_service("aiostreams")
     elif action == "imdb_refresh_show":
         refresh_imdb_show_scores(params.get("type", "series"), params.get("id", ""), params.get("quiet") == "1")
+    elif action == "imdb_refresh_season":
+        refresh_imdb_season_worker(params.get("type", "series"), params.get("id", ""), params.get("season", "1"))
     elif action == "about":
         about()
     elif action == "catalog":
