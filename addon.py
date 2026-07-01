@@ -68,6 +68,8 @@ IMDB_EPISODE_SCORES_FILE = "imdb_episode_scores.json"
 FORWARDER_TOKENS_FILE = "forwarder_tokens.json"
 STREAM_CONTEXTS_FILE = "stream_contexts.json"
 CREDENTIALS_FILE = "credentials.json"
+AIOS_CREDENTIAL_KEYS = ("aiostreams_url", "aio_streams_url", "aio_url", "aiostreams")
+AIOMETA_CREDENTIAL_KEYS = ("aiometadata_url", "aio_metadata_url", "metadata_url", "aiometadata")
 IMDB_GRAPHQL_URL = "https://api.graphql.imdb.com/"
 IMDB_SCORE_REFRESH_RECENT = 24 * 3600
 IMDB_SCORE_REFRESH_CURRENT = 3 * 24 * 3600
@@ -125,6 +127,37 @@ def load_credentials():
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def read_credentials_status():
+    path = credentials_path()
+    if not os.path.exists(path):
+        save_credentials_template(path)
+        return {}, "created empty template"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except OSError as exc:
+        return {}, "read error: %s" % exc
+    except ValueError as exc:
+        return {}, "invalid JSON: %s" % exc
+    if not isinstance(data, dict):
+        return {}, "invalid JSON shape: expected object"
+    return data, "loaded"
+
+
+def credential_value_from(data, keys):
+    if not isinstance(data, dict):
+        return ""
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def credential_value(*keys):
+    return credential_value_from(load_credentials(), keys)
 
 
 def save_credentials_template(path):
@@ -454,15 +487,22 @@ def endpoint_base(setting_id):
 
 
 def credential_endpoint_base(key):
-    return endpoint_base_value(load_credentials().get(key, ""))
+    if key == "aiostreams_url":
+        return endpoint_base_value(credential_value(*AIOS_CREDENTIAL_KEYS))
+    if key == "aiometadata_url":
+        return endpoint_base_value(credential_value(*AIOMETA_CREDENTIAL_KEYS))
+    return endpoint_base_value(credential_value(key))
 
 
 def endpoint_base_value(value):
     value = str(value or "").strip().rstrip("/")
     if not value:
         return ""
-    if value.endswith("/manifest.json"):
-        return value[: -len("/manifest.json")]
+    parsed = urllib.parse.urlparse(value)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/manifest.json"):
+        path = path[: -len("/manifest.json")]
+        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip("/")
     return value
 
 
@@ -2113,10 +2153,21 @@ def about():
 
 def credentials_info():
     path = credentials_path()
-    load_credentials()
+    data, status = read_credentials_status()
+    aios_setting = endpoint_base("aiostreams_url")
+    aios_credentials = endpoint_base_value(credential_value_from(data, AIOS_CREDENTIAL_KEYS))
+    aiometa_setting = endpoint_base("aiometadata_url")
+    aiometa_credentials = endpoint_base_value(credential_value_from(data, AIOMETA_CREDENTIAL_KEYS))
+    aios_source = "Kodi setting" if aios_setting else ("credentials file" if aios_credentials else "not configured")
+    aiometa_source = "Kodi setting" if aiometa_setting else ("credentials file" if aiometa_credentials else "Cinemeta fallback")
     xbmcgui.Dialog().ok(
         "AIOStreams Credentials",
-        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)" % path,
+        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nStatus: %s\nAIOStreams: %s\nMetadata: %s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)" % (
+            path,
+            status,
+            aios_source,
+            aiometa_source,
+        ),
     )
     settings_menu()
 
