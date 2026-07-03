@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="repository.aiostreams.beta" name="AIOStreams Beta Repository" version="0.1.0" provider-name="OpenCode">
+  <requires>
+    <import addon="xbmc.addon" version="12.0.0" />
+  </requires>
+  <extension point="xbmc.addon.repository" name="AIOStreams Beta Repository">
+    <dir>
+      <info compressed="false">https://needforseed1.github.io/aios-kodi/beta/addons.xml</info>
+      <checksum>https://needforseed1.github.io/aios-kodi/beta/addons.xml.md5</checksum>
+      <datadir zip="true">https://needforseed1.github.io/aios-kodi/beta/</datadir>
+    </dir>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Install beta updates for AIOStreams for Kodi</summary>
+    <description lang="en_GB">Opt-in beta repository for preview AIOStreams for Kodi builds.</description>
+    <platform>all</platform>
+    <license>GPL-3.0</license>
+    <assets>
+      <icon>icon.png</icon>
+    </assets>
+  </extension>
+</addon>

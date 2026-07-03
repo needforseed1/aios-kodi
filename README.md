@@ -34,6 +34,22 @@ Direct zip fallback:
 
 [repository.aiostreams-0.1.0.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip)
 
+## Beta Repository
+
+Beta builds are published separately so stable repository users do not receive preview updates automatically. Add the beta repository URL as a Kodi file source only on devices where you want opt-in preview releases:
+
+```text
+https://needforseed1.github.io/aios-kodi/beta/
+```
+
+Then install the beta repository add-on:
+
+```text
+repository.aiostreams.beta/repository.aiostreams.beta-0.1.0.zip
+```
+
+The beta repository uses the same video add-on ID, so beta versions replace stable versions on devices where the beta repository is installed.
+
 ## Configure
 
 Open the add-on settings and paste the full AIOStreams install URL. The URL usually ends with `manifest.json`:
@@ -159,12 +175,26 @@ python3 tools/build_repo.py --clean --base-url https://example.com/kodi/
 
 Host the contents of `repo/` at that URL. Kodi reads `addons.xml`, verifies `addons.xml.md5`, and downloads add-on zips from the subdirectories.
 
+To build the beta repository tree locally:
+
+```bash
+python3 tools/build_repo.py --clean --output-dir repo-beta --base-url https://example.com/kodi/beta/ --repository-manifest repository.aiostreams.beta/addon.xml
+```
+
 ## Publish With GitHub Pages
 
-The `repository` workflow builds and deploys the repository tree to GitHub Pages on pushes to `main` and from manual workflow runs. The published repository zip is available at:
+The `repository` workflow builds and deploys the repository tree to GitHub Pages on pushes to `main` and from manual workflow runs. Stable root repository files are built from the `stable` branch. Beta repository files are built from `main` and published under `/beta/`.
+
+The published stable repository zip is available at:
 
 ```text
 https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip
+```
+
+The published beta repository zip is available at:
+
+```text
+https://needforseed1.github.io/aios-kodi/beta/repository.aiostreams.beta/repository.aiostreams.beta-0.1.0.zip
 ```
 
 ## Development

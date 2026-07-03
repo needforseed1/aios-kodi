@@ -19,15 +19,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: stable
+          path: stable-src
+      - uses: actions/checkout@v4
+        with:
+          path: beta-src
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python3 -m compileall -q addon.py service.py resources/lib tools/build_repo.py
+        working-directory: beta-src
       - run: python3 tools/build_repo.py --clean
+        working-directory: stable-src
+      - run: python3 tools/build_repo.py --clean --output-dir repo-beta --base-url https://needforseed1.github.io/aios-kodi/beta/ --repository-manifest repository.aiostreams.beta/addon.xml
+        working-directory: beta-src
+      - run: |
+          mkdir -p site
+          cp -R stable-src/repo/. site/
+          mkdir -p site/beta
+          cp -R beta-src/repo-beta/. site/beta/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: repo
+          path: site
 
   deploy:
     environment:

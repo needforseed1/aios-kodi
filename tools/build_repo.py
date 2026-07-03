@@ -10,7 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_MANIFEST = ROOT / "addon.xml"
-REPOSITORY_MANIFEST = ROOT / "repository.aiostreams" / "addon.xml"
+DEFAULT_REPOSITORY_MANIFEST = ROOT / "repository.aiostreams" / "addon.xml"
 DEFAULT_BASE_URL = "https://needforseed1.github.io/aios-kodi/"
 
 
@@ -33,8 +33,8 @@ def indent(element, level=0):
         element.tail = padding
 
 
-def repository_tree(base_url):
-    tree = ET.parse(REPOSITORY_MANIFEST)
+def repository_tree(base_url, repository_manifest):
+    tree = ET.parse(repository_manifest)
     root = tree.getroot()
     repo_extension = root.find("./extension[@point='xbmc.addon.repository']")
     if repo_extension is None:
@@ -93,8 +93,8 @@ def build_plugin_zip(output_dir):
     return zip_path
 
 
-def build_repository_zip(output_dir, repo_tree):
-    addon_id, version = parse_manifest(REPOSITORY_MANIFEST)
+def build_repository_zip(output_dir, repo_tree, repository_manifest):
+    addon_id, version = parse_manifest(repository_manifest)
     zip_path = output_dir / addon_id / ("%s-%s.zip" % (addon_id, version))
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     icon = ROOT / "resources" / "media" / "icon.png"
@@ -125,10 +125,18 @@ def write_addons_xml(output_dir, manifests):
     return addons_xml
 
 
+def display_path(path):
+    try:
+        return path.relative_to(ROOT)
+    except ValueError:
+        return path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build the Kodi repository distribution tree.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Public URL where the generated repo directory is hosted.")
     parser.add_argument("--output-dir", default=str(ROOT / "repo"), help="Directory to write repository files into.")
+    parser.add_argument("--repository-manifest", default=str(DEFAULT_REPOSITORY_MANIFEST), help="Repository add-on manifest to include.")
     parser.add_argument("--clean", action="store_true", help="Remove the output directory before building.")
     args = parser.parse_args()
 
@@ -139,9 +147,13 @@ def main():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    repo_tree = repository_tree(args.base_url)
+    repository_manifest_path = Path(args.repository_manifest)
+    if not repository_manifest_path.is_absolute():
+        repository_manifest_path = ROOT / repository_manifest_path
+
+    repo_tree = repository_tree(args.base_url, repository_manifest_path)
     plugin_zip = build_plugin_zip(output_dir)
-    repository_zip = build_repository_zip(output_dir, repo_tree)
+    repository_zip = build_repository_zip(output_dir, repo_tree, repository_manifest_path)
 
     plugin_manifest = PLUGIN_MANIFEST.read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -150,10 +162,10 @@ def main():
         repository_manifest = repo_manifest_path.read_text(encoding="utf-8")
     addons_xml = write_addons_xml(output_dir, [plugin_manifest, repository_manifest])
 
-    print("Wrote %s" % addons_xml.relative_to(ROOT))
-    print("Wrote %s" % (output_dir / "addons.xml.md5").relative_to(ROOT))
-    print("Wrote %s" % plugin_zip.relative_to(ROOT))
-    print("Wrote %s" % repository_zip.relative_to(ROOT))
+    print("Wrote %s" % display_path(addons_xml))
+    print("Wrote %s" % display_path(output_dir / "addons.xml.md5"))
+    print("Wrote %s" % display_path(plugin_zip))
+    print("Wrote %s" % display_path(repository_zip))
 
 
 if __name__ == "__main__":
