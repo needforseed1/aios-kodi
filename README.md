@@ -55,11 +55,30 @@ Use `Settings -> Credentials file location` inside the add-on to create or show 
 ```json
 {
   "aiostreams_url": "https://example.com/stremio/<uuid>/<config>/manifest.json",
-  "aiometadata_url": ""
+  "aiometadata_url": "",
+  "trakt_client_id": "",
+  "trakt_client_secret": "",
+  "trakt_redirect_uri": "urn:ietf:wg:oauth:2.0:oob"
 }
 ```
 
 For best matching, use a metadata provider that returns IMDb IDs. Cinemeta works as the default fallback for standard movie and series IDs.
+
+## Trakt
+
+Trakt integration is optional. Create a Trakt API app at:
+
+```text
+https://trakt.tv/oauth/applications
+```
+
+Then enable Trakt in the add-on settings and enter the client ID and client secret, or add them to `credentials.json` using the keys shown above. In the add-on, open `Settings -> Authenticate Trakt` and approve the displayed device code in a browser. The add-on stores Trakt OAuth tokens in:
+
+```text
+<Kodi userdata>/addon_data/plugin.video.aiostreams/trakt_tokens.json
+```
+
+When enabled and authenticated, playback is scrobbled to Trakt from Kodi's background service. Items need IMDb-backed IDs for reliable matching.
 
 ## Build The Repository
 

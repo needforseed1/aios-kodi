@@ -15,6 +15,8 @@ import xbmc
 import xbmcaddon
 import xbmcvfs
 
+from resources.lib import trakt
+
 
 ADDON = xbmcaddon.Addon("plugin.video.aiostreams")
 RESUME_FILE = "resume.json"
@@ -149,6 +151,11 @@ def entry_from_context(context):
         "stream_title": context.get("stream_title") or "",
         "item_id": context.get("item_id") or "",
         "item_type": context.get("item_type") or "",
+        "video_id": context.get("video_id") or "",
+        "show_id": context.get("show_id") or "",
+        "show_imdb": context.get("show_imdb") or "",
+        "season": context.get("season") or "",
+        "episode": context.get("episode") or "",
         "url": context.get("url") or "",
         "headers": context.get("headers") or {},
         "art": context.get("art") if isinstance(context.get("art"), dict) else {},
@@ -280,6 +287,7 @@ def record_resume(player, state):
                     state["resume_last_seek"] = 0
                     state["resume_seek_attempts"] = 0
                     state["last_position"] = 0
+                    state["trakt_started"] = False
                     xbmc.log("AIOStreams resume tracking started: %s" % next_entry.get("title"), xbmc.LOGINFO)
 
         entry = state.get("entry")
@@ -297,6 +305,9 @@ def record_resume(player, state):
         entry["position"] = position
         entry["duration"] = duration or safe_int(entry.get("duration"))
         resume_duration = safe_int(entry.get("duration"))
+        if not state.get("trakt_started"):
+            trakt.scrobble("start", entry, position, resume_duration)
+            state["trakt_started"] = True
         now = time.time()
         last_position = safe_int(state.get("last_position"))
         position_jump = last_position and abs(position - last_position) >= 30
@@ -317,6 +328,7 @@ def record_resume(player, state):
     if active_key and entry:
         position = safe_int(entry.get("position"))
         duration = safe_int(entry.get("duration"))
+        trakt.scrobble("stop", entry, position, duration)
         if should_keep_resume(position, duration):
             upsert_resume_entry(entry)
             xbmc.log("AIOStreams resume finalized at %ss/%ss" % (position, duration), xbmc.LOGINFO)
@@ -335,6 +347,7 @@ def record_resume(player, state):
     state["resume_last_seek"] = 0
     state["resume_seek_attempts"] = 0
     state["last_position"] = 0
+    state["trakt_started"] = False
 
 
 class ForwarderHandler(BaseHTTPRequestHandler):
@@ -490,6 +503,7 @@ def run():
         "resume_last_seek": 0,
         "resume_seek_attempts": 0,
         "last_position": 0,
+        "trakt_started": False,
     }
     port = setting_int("forwarder_port", 45987)
     try:

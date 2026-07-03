@@ -63,11 +63,25 @@ def test_resume_key_is_stable():
 
 
 def test_entry_from_context_defaults():
-    entry = service.entry_from_context({"url": "http://u", "resume": "61", "duration": "3600"})
+    entry = service.entry_from_context({
+        "url": "http://u",
+        "resume": "61",
+        "duration": "3600",
+        "video_id": "tt1:1:2",
+        "show_id": "tt1",
+        "show_imdb": "tt1",
+        "season": "1",
+        "episode": "2",
+    })
     assert entry["position"] == 61
     assert entry["duration"] == 3600
     assert entry["title"] == "Untitled"
     assert entry["key"] == service.resume_key("http://u", "", "")
+    assert entry["video_id"] == "tt1:1:2"
+    assert entry["show_id"] == "tt1"
+    assert entry["show_imdb"] == "tt1"
+    assert entry["season"] == "1"
+    assert entry["episode"] == "2"
 
 
 def test_sanitize_playback_headers_matches_addon():

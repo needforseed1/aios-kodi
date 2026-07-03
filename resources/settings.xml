@@ -105,7 +105,55 @@
           </control>
         </setting>
       </group>
-      <group id="4" label="30004">
+      <group id="4" label="30005">
+        <setting id="trakt_enabled" type="boolean" label="30050">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="trakt_scrobble" type="boolean" label="30051">
+          <level>0</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="enable" setting="trakt_enabled">true</dependency>
+          </dependencies>
+          <control type="toggle"/>
+        </setting>
+        <setting id="trakt_client_id" type="string" label="30052">
+          <level>0</level>
+          <default></default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="trakt_enabled">true</dependency>
+          </dependencies>
+          <control type="edit" format="string"/>
+        </setting>
+        <setting id="trakt_client_secret" type="string" label="30053">
+          <level>0</level>
+          <default></default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="trakt_enabled">true</dependency>
+          </dependencies>
+          <control type="edit" format="string"/>
+        </setting>
+        <setting id="trakt_redirect_uri" type="string" label="30054">
+          <level>2</level>
+          <default>urn:ietf:wg:oauth:2.0:oob</default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="trakt_enabled">true</dependency>
+          </dependencies>
+          <control type="edit" format="string"/>
+        </setting>
+      </group>
+      <group id="5" label="30004">
         <setting id="view_apply_delay_ms" type="integer" label="30040">
           <level>2</level>
           <default>50</default>

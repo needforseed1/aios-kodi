@@ -19,7 +19,7 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
-from resources.lib import views
+from resources.lib import trakt, views
 
 
 ADDON = xbmcaddon.Addon()
@@ -167,6 +167,9 @@ def save_credentials_template(path):
     data = {
         "aiostreams_url": "",
         "aiometadata_url": "",
+        "trakt_client_id": "",
+        "trakt_client_secret": "",
+        "trakt_redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
     }
     try:
         with open(path, "w", encoding="utf-8") as handle:
@@ -1440,11 +1443,17 @@ def list_episodes(item_type, item_id, season):
             info["episode"] = int(episode)
         if str(season).isdigit():
             info["season"] = int(season)
+        show_imdb = tvmaze_imdb_id(meta, item_id) if item_type == "series" else ""
         item_art = episode_art(meta, video)
         add_directory(label, {
             "action": "streams",
             "type": item_type,
             "id": best_stream_id(video, video_id),
+            "video_id": video_id,
+            "show_id": item_id,
+            "show_imdb": show_imdb,
+            "season": season,
+            "episode": episode,
             "title": content_title,
             "art": art_json(item_art),
         }, item_art, info)
@@ -1857,7 +1866,7 @@ def sanitize_playback_headers(headers):
     }
 
 
-def list_streams(item_type, item_id, content_title="", content_art_json=""):
+def list_streams(item_type, item_id, content_title="", content_art_json="", video_id="", show_id="", show_imdb="", season="", episode=""):
     base = aiostreams_base()
     if not base:
         error("AIOStreams manifest URL is not configured")
@@ -1887,6 +1896,11 @@ def list_streams(item_type, item_id, content_title="", content_art_json=""):
                 "headers": stream_headers(stream),
                 "item_id": item_id,
                 "item_type": item_type,
+                "video_id": video_id,
+                "show_id": show_id,
+                "show_imdb": show_imdb,
+                "season": season,
+                "episode": episode,
                 "title": content_title or item_id,
                 "stream_title": label,
                 "art": content_art,
@@ -2073,11 +2087,116 @@ def settings_menu():
     xbmcplugin.setPluginCategory(HANDLE, "Settings")
     add_action("Configure addon URLs and options", {"action": "configure"}, fallback_art("settings"))
     add_action("Credentials file location", {"action": "credentials_info"}, fallback_art("settings"))
+    add_action("Trakt status", {"action": "trakt_status"}, fallback_art("settings"))
+    add_action("Authenticate Trakt", {"action": "trakt_auth"}, fallback_art("settings"))
+    if trakt.authenticated():
+        add_action("Sign out of Trakt", {"action": "trakt_sign_out"}, fallback_art("settings"))
     add_action("Refresh " + metadata_provider_label(), {"action": "refresh_aiometadata"}, fallback_art("settings"))
     add_action("Refresh AIOStreams", {"action": "refresh_aiostreams"}, fallback_art("settings"))
     add_directory("View Mode Setup", {"action": "view_mode_setup"}, fallback_art("settings"))
     add_action("About", {"action": "about"}, fallback_art("default"))
     set_view()
+
+
+def trakt_status():
+    configured = "yes" if trakt.configured() else "no"
+    enabled = "yes" if trakt.enabled() else "no"
+    authenticated = "yes" if trakt.authenticated() else "no"
+    token_path = trakt.profile_path(trakt.TOKENS_FILE)
+    xbmcgui.Dialog().ok(
+        "AIOStreams Trakt",
+        "Configured: %s\nEnabled: %s\nAuthenticated: %s\n\nToken file:\n%s" % (
+            configured,
+            enabled,
+            authenticated,
+            token_path,
+        ),
+    )
+    settings_menu()
+
+
+def trakt_authenticate():
+    if not trakt.configured():
+        error("Configure Trakt client ID and secret first")
+        settings_menu()
+        return
+    try:
+        code_data = trakt.device_code()
+    except trakt.TraktError as exc:
+        error("Trakt auth failed: %s" % exc)
+        settings_menu()
+        return
+
+    device_code = code_data.get("device_code") or ""
+    user_code = code_data.get("user_code") or ""
+    verification_url = code_data.get("verification_url") or "https://trakt.tv/activate"
+    expires_in = safe_int(code_data.get("expires_in"), 600)
+    interval = max(1, safe_int(code_data.get("interval"), 5))
+    if not device_code or not user_code:
+        error("Trakt did not return a device code")
+        settings_menu()
+        return
+
+    progress = None
+    progress_class = getattr(xbmcgui, "DialogProgress", None)
+    if progress_class:
+        progress = progress_class()
+        progress.create("AIOStreams Trakt", "Go to %s" % verification_url, "Code: %s" % user_code)
+    else:
+        xbmcgui.Dialog().ok(
+            "AIOStreams Trakt",
+            "Go to:\n%s\n\nEnter code:\n%s\n\nPress OK after approving AIOStreams." % (verification_url, user_code),
+        )
+
+    deadline = time.time() + expires_in
+    wait_seconds = interval
+    try:
+        while time.time() < deadline:
+            if progress:
+                try:
+                    if progress.iscanceled():
+                        break
+                    elapsed = expires_in - int(deadline - time.time())
+                    percent = int(max(0, min(100, elapsed * 100 / max(1, expires_in))))
+                    progress.update(percent, "Go to %s" % verification_url, "Code: %s" % user_code)
+                except Exception:
+                    pass
+            try:
+                status, token_data = trakt.poll_device_token(device_code)
+            except trakt.TraktError as exc:
+                error("Trakt auth failed: %s" % exc)
+                break
+            if status == 200:
+                trakt.save_tokens(token_data)
+                notify("Trakt authenticated")
+                break
+            if status == 400:
+                pass
+            elif status == 429:
+                wait_seconds += interval
+            elif status == 410:
+                error("Trakt code expired; start authentication again")
+                break
+            elif status == 418:
+                error("Trakt authentication was denied")
+                break
+            else:
+                error("Trakt authentication failed: HTTP %s" % status)
+                break
+            xbmc.sleep(int(wait_seconds * 1000))
+    finally:
+        if progress:
+            try:
+                progress.close()
+            except Exception:
+                pass
+    settings_menu()
+
+
+def trakt_sign_out():
+    trakt.revoke()
+    notify("Trakt signed out")
+    settings_menu()
 
 
 def list_resume():
@@ -2107,6 +2226,11 @@ def list_resume():
             "stream_title": entry.get("stream_title") or "",
             "item_id": entry.get("item_id") or "",
             "item_type": entry.get("item_type") or "",
+            "video_id": entry.get("video_id") or "",
+            "show_id": entry.get("show_id") or "",
+            "show_imdb": entry.get("show_imdb") or "",
+            "season": entry.get("season") or "",
+            "episode": entry.get("episode") or "",
             "key": entry.get("key") or "",
             "art": entry_art,
         }, stream_contexts, save=False)
@@ -2264,13 +2388,15 @@ def credentials_info():
     aiometa_credentials = endpoint_base_value(credential_value_from(data, AIOMETA_CREDENTIAL_KEYS))
     aios_source = "Kodi setting" if aios_setting else ("credentials file" if aios_credentials else "not configured")
     aiometa_source = "Kodi setting" if aiometa_setting else ("credentials file" if aiometa_credentials else "Cinemeta fallback")
+    trakt_client_source = "Kodi setting" if setting("trakt_client_id") else ("credentials file" if credential_value_from(data, ("trakt_client_id", "trakt_api_key", "trakt_client")) else "not configured")
     xbmcgui.Dialog().ok(
         "AIOStreams Credentials",
-        "Edit this JSON file to configure manifest URLs:\n\n%s\n\nStatus: %s\nAIOStreams: %s\nMetadata: %s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)" % (
+        "Edit this JSON file to configure manifest URLs and optional Trakt API credentials:\n\n%s\n\nStatus: %s\nAIOStreams: %s\nMetadata: %s\nTrakt client: %s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)\ntrakt_client_id\ntrakt_client_secret\ntrakt_redirect_uri" % (
             path,
             status,
             aios_source,
             aiometa_source,
+            trakt_client_source,
         ),
     )
     settings_menu()
@@ -2317,6 +2443,12 @@ def dispatch():
         settings_menu()
     elif action == "credentials_info":
         credentials_info()
+    elif action == "trakt_status":
+        trakt_status()
+    elif action == "trakt_auth":
+        trakt_authenticate()
+    elif action == "trakt_sign_out":
+        trakt_sign_out()
     elif action == "refresh_aiometadata":
         refresh_service("aiometadata")
     elif action == "refresh_aiostreams":
@@ -2334,13 +2466,28 @@ def dispatch():
     elif action == "episodes":
         list_episodes(params.get("type", "series"), params.get("id", ""), params.get("season", "1"))
     elif action == "streams":
-        list_streams(params.get("type", "movie"), params.get("id", ""), params.get("title", ""), params.get("art", ""))
+        list_streams(
+            params.get("type", "movie"),
+            params.get("id", ""),
+            params.get("title", ""),
+            params.get("art", ""),
+            params.get("video_id", ""),
+            params.get("show_id", ""),
+            params.get("show_imdb", ""),
+            params.get("season", ""),
+            params.get("episode", ""),
+        )
     elif action == "play":
         play(params.get("url", ""), params.get("headers", "{}"), 0, {
             "title": params.get("title", ""),
             "stream_title": params.get("stream_title", ""),
             "item_id": params.get("item_id", ""),
             "item_type": params.get("item_type", ""),
+            "video_id": params.get("video_id", ""),
+            "show_id": params.get("show_id", ""),
+            "show_imdb": params.get("show_imdb", ""),
+            "season": params.get("season", ""),
+            "episode": params.get("episode", ""),
             "duration": safe_int(params.get("duration")),
             "art": art_from_json(params.get("art", "")),
         })
@@ -2355,6 +2502,11 @@ def dispatch():
             "stream_title": params.get("stream_title", ""),
             "item_id": params.get("item_id", ""),
             "item_type": params.get("item_type", ""),
+            "video_id": params.get("video_id", ""),
+            "show_id": params.get("show_id", ""),
+            "show_imdb": params.get("show_imdb", ""),
+            "season": params.get("season", ""),
+            "episode": params.get("episode", ""),
             "duration": safe_int(params.get("duration")),
             "art": art_from_json(params.get("art", "")),
         })
