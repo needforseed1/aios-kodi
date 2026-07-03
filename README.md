@@ -13,17 +13,9 @@ Torrent infohash-only streams are shown as unsupported because Kodi cannot play 
 
 ## Install From Repository
 
-After GitHub Pages has deployed, download the repository add-on zip:
+Download the repository add-on zip:
 
-```text
-https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip
-```
-
-For a local build, the same zip is generated at:
-
-```text
-repo/repository.aiostreams/repository.aiostreams-0.1.0.zip
-```
+[repository.aiostreams-0.1.0.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip)
 
 Install it in Kodi:
 
@@ -33,6 +25,12 @@ Install it in Kodi:
 4. Install `AIOStreams for Kodi`.
 
 When the hosted repository is updated, Kodi can update the add-on through the normal add-on update flow.
+
+Direct repository files are published at:
+
+```text
+https://needforseed1.github.io/aios-kodi/
+```
 
 ## Configure
 
@@ -63,7 +61,7 @@ For best matching, use a metadata provider that returns IMDb IDs. Cinemeta works
 
 ## Build The Repository
 
-Generate the installable Kodi repository tree:
+For local development, generate the installable Kodi repository tree:
 
 ```bash
 python3 tools/build_repo.py --clean
@@ -94,9 +92,7 @@ Host the contents of `repo/` at that URL. Kodi reads `addons.xml`, verifies `add
 
 ## Publish With GitHub Pages
 
-The `repository` workflow builds and deploys the repository tree on pushes to `main` and from manual workflow runs.
-
-In GitHub, enable Pages with `Settings -> Pages -> Build and deployment -> Source -> GitHub Actions`. After the workflow succeeds, the repository zip is available at:
+The `repository` workflow builds and deploys the repository tree to GitHub Pages on pushes to `main` and from manual workflow runs. The published repository zip is available at:
 
 ```text
 https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip
