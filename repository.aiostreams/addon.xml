@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="repository.aiostreams" name="AIOStreams Repository" version="0.1.0" provider-name="OpenCode">
+  <requires>
+    <import addon="xbmc.addon" version="12.0.0" />
+  </requires>
+  <extension point="xbmc.addon.repository" name="AIOStreams Repository">
+    <dir>
+      <info compressed="false">https://needforseed1.github.io/aios-kodi/addons.xml</info>
+      <checksum>https://needforseed1.github.io/aios-kodi/addons.xml.md5</checksum>
+      <datadir zip="true">https://needforseed1.github.io/aios-kodi/</datadir>
+    </dir>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Install and update AIOStreams for Kodi</summary>
+    <description lang="en_GB">Repository for the AIOStreams for Kodi video add-on.</description>
+    <platform>all</platform>
+    <license>GPL-3.0</license>
+    <assets>
+      <icon>icon.png</icon>
+    </assets>
+  </extension>
+</addon>
