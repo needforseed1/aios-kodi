@@ -60,7 +60,7 @@
       <group id="2" label="30002">
         <setting id="use_local_forwarder" type="boolean" label="30020">
           <level>0</level>
-          <default>true</default>
+          <default>false</default>
           <control type="toggle"/>
         </setting>
         <setting id="forwarder_port" type="integer" label="30021">

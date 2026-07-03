@@ -7,7 +7,10 @@ It supports:
 - AIOMetadata catalogs, search, posters, metadata, and IMDb-backed IDs.
 - Public Cinemeta fallback when AIOMetadata is not configured.
 - AIOStreams source lookup and direct HTTP/HTTPS playback.
-- Movie, series, season, episode, search, resume, and view-mode workflows.
+- Optional local playback forwarder for source compatibility edge cases.
+- Movie, series, season, episode, search, resume, Trakt, and view-mode workflows.
+- Per-movie/per-episode resume history with source fallback when old saved stream URLs no longer work.
+- Optional Trakt authentication, scrobbling, Resume, Next Up, watchlist, watched, and history lists.
 
 Torrent infohash-only streams are shown as unsupported because Kodi cannot play them directly without a separate torrent playback layer.
 
@@ -72,6 +75,8 @@ Use `Settings -> Credentials file location` inside the add-on to create or show 
 {
   "aiostreams_url": "https://example.com/stremio/<uuid>/<config>/manifest.json",
   "aiometadata_url": "",
+  "trakt_enabled": false,
+  "trakt_scrobble": true,
   "trakt_client_id": "",
   "trakt_client_secret": "",
   "trakt_redirect_uri": "urn:ietf:wg:oauth:2.0:oob"
@@ -104,6 +109,8 @@ metadata_url
 aiometadata
 ```
 
+Trakt can also be configured in the same file. Set `trakt_enabled` to `true`, leave the Kodi Trakt settings blank if you want the file to be used, then run `Settings -> Authenticate Trakt` once inside the add-on.
+
 ## Trakt
 
 Trakt integration is optional. Create a Trakt API app at:
@@ -112,15 +119,50 @@ Trakt integration is optional. Create a Trakt API app at:
 https://trakt.tv/oauth/applications
 ```
 
-Then enable Trakt in the add-on settings and enter the client ID and client secret, or add them to `credentials.json` using the keys shown above. In the add-on, open `Settings -> Authenticate Trakt` and approve the displayed device code in a browser. The add-on stores Trakt OAuth tokens in:
+Then enable Trakt in the add-on settings and enter the client ID and client secret, or add them to `credentials.json` using the keys shown above. To avoid pasting values in Kodi, set `trakt_enabled` to `true` and add `trakt_client_id` and `trakt_client_secret` in the file. Set `trakt_scrobble` to `false` if you want Trakt lists without playback scrobbling.
+
+In the add-on, open `Settings -> Authenticate Trakt` and approve the displayed device code in a browser. The add-on stores Trakt OAuth tokens in:
 
 ```text
 <Kodi userdata>/addon_data/plugin.video.aiostreams/trakt_tokens.json
 ```
 
-When enabled and authenticated, playback is scrobbled to Trakt from Kodi's background service. The add-on also adds a Trakt folder for resume progress, watchlist, watched items, and recent history. Trakt watched data is used to set Kodi playcount markers in catalog and episode lists. Trakt resume entries resolve through AIOStreams sources when opened, then start at the saved progress when a source is selected.
+When enabled and authenticated, playback is scrobbled to Trakt from Kodi's background service. The add-on also adds a Trakt folder with:
+
+- Resume progress from Trakt playback state.
+- Next Up, built from recent watched episode history and Trakt watched-progress data.
+- Watchlist movies and shows.
+- Watched movies and shows.
+- Recent movie and episode history.
+
+Trakt watched data is used to set Kodi playcount markers in catalog and episode lists. Trakt items are enriched with AIOMetadata/Cinemeta metadata and artwork when an IMDb-backed ID is available. Trakt Resume and Next Up entries resolve through AIOStreams sources when opened; they do not store or reuse saved stream URLs.
 
 Items need IMDb-backed IDs for reliable matching.
+
+## Playback Forwarder
+
+By default, playback is handed directly to Kodi. This is the fastest path for most working HTTP/HTTPS sources and avoids relaying the stream through the add-on's Python service.
+
+The optional `Use local playback forwarder` setting makes Kodi play from `127.0.0.1` while the add-on service fetches the real upstream stream. Enable it only when direct playback has source-specific problems, for example:
+
+- Required request headers are not handled correctly by Kodi's built-in HTTP client.
+- A host behaves badly with redirects, authenticated URLs, or Basic Auth in the URL.
+- Seeking or resume fails because the host is picky about Range requests.
+- Direct playback fails but the same source works through the add-on forwarder.
+
+The forwarder can be slower for high-bitrate streams because video data passes through Python before reaching Kodi. Resume tracking and Trakt scrobbling do not require the forwarder.
+
+## Resume
+
+Local resume history is stored in:
+
+```text
+<Kodi userdata>/addon_data/plugin.video.aiostreams/resume.json
+```
+
+Resume entries are keyed by movie or episode where possible, not by source stream. Changing source should update the same movie/episode resume item instead of creating a duplicate. If an old saved stream URL fails or no playable HTTP stream is returned, the add-on falls back to Search/Sources for the same movie or episode and keeps the saved resume offset.
+
+The local Resume screen has a context-menu action named `Remove from Resume` for clearing an item from local resume history. Kodi's built-in watched context menu does not update this add-on's resume file.
 
 ## Layout and View Settings
 

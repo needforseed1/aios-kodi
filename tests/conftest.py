@@ -82,6 +82,8 @@ def _xbmcgui():
             self.properties = {}
             self.art = {}
             self.info = {}
+            self.context_menu = []
+            self.context_menu_replace = False
 
         def setProperty(self, key, value):
             self.properties[key] = value
@@ -103,6 +105,10 @@ def _xbmcgui():
 
         def setContentLookup(self, enabled):
             pass
+
+        def addContextMenuItems(self, items, replaceItems=False):
+            self.context_menu.extend(items or [])
+            self.context_menu_replace = replaceItems
 
         def getVideoInfoTag(self):
             # No setters: forces the Kodi 19 setInfo fallback in tests.

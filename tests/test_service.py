@@ -62,6 +62,24 @@ def test_resume_key_is_stable():
     assert key_one != service.resume_key("http://u", "tt2", "stream")
 
 
+def test_playback_media_key_movie_ignores_stream():
+    first = service.playback_media_key({"item_type": "movie", "item_id": "tt1", "url": "http://one"})
+    second = service.playback_media_key({"item_type": "movie", "item_id": "tt1", "url": "http://two"})
+
+    assert first == "movie:tt1"
+    assert second == first
+
+
+def test_playback_media_key_episode_ignores_stream():
+    key = service.playback_media_key({
+        "item_type": "series",
+        "video_id": "tt1:2:3",
+        "url": "http://one",
+    })
+
+    assert key == "episode:tt1:2:3"
+
+
 def test_entry_from_context_defaults():
     entry = service.entry_from_context({
         "url": "http://u",
@@ -76,7 +94,7 @@ def test_entry_from_context_defaults():
     assert entry["position"] == 61
     assert entry["duration"] == 3600
     assert entry["title"] == "Untitled"
-    assert entry["key"] == service.resume_key("http://u", "", "")
+    assert entry["key"] == "episode:tt1:1:2"
     assert entry["video_id"] == "tt1:1:2"
     assert entry["show_id"] == "tt1"
     assert entry["show_imdb"] == "tt1"

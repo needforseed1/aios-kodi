@@ -1,6 +1,30 @@
 from resources.lib import trakt
 
 
+def test_trakt_enabled_can_come_from_credentials_file(monkeypatch):
+    monkeypatch.setattr(trakt, "setting", lambda key: "")
+    monkeypatch.setattr(trakt, "load_credentials", lambda: {
+        "trakt_enabled": True,
+        "trakt_client_id": "client",
+        "trakt_client_secret": "secret",
+    })
+
+    assert trakt.configured()
+    assert trakt.enabled()
+
+
+def test_trakt_scrobble_can_be_disabled_from_credentials_file(monkeypatch):
+    monkeypatch.setattr(trakt, "setting", lambda key: "true" if key == "trakt_enabled" else "")
+    monkeypatch.setattr(trakt, "load_credentials", lambda: {
+        "trakt_scrobble": False,
+        "trakt_client_id": "client",
+        "trakt_client_secret": "secret",
+    })
+
+    assert trakt.enabled()
+    assert not trakt.scrobble_enabled()
+
+
 def test_movie_scrobble_payload_from_imdb_id():
     payload = trakt.scrobble_payload({
         "item_type": "movie",
@@ -62,6 +86,7 @@ def test_sync_paths_include_extended_info():
         assert trakt.watchlist("shows") == []
         assert trakt.history("episodes") == []
         assert trakt.watched("movies") == []
+        assert trakt.show_progress("tt7654321") == []
     finally:
         trakt.api_request = original
 
@@ -70,4 +95,18 @@ def test_sync_paths_include_extended_info():
         "/sync/watchlist/shows/rank/asc?extended=full&limit=50",
         "/sync/history/episodes?extended=full&limit=50",
         "/sync/watched/movies?extended=full",
+        "/shows/tt7654321/progress/watched?hidden=false&specials=false&count_specials=false&extended=full",
     ]
+
+
+def test_remove_playback_uses_delete(monkeypatch):
+    calls = []
+
+    def fake_api_request(path, method="GET", body=None, oauth=True):
+        calls.append((path, method, body, oauth))
+        return {}
+
+    monkeypatch.setattr(trakt, "api_request", fake_api_request)
+
+    assert trakt.remove_playback(123)
+    assert calls == [("/sync/playback/123", "DELETE", None, True)]

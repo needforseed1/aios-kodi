@@ -81,6 +81,8 @@ META_CACHE_TTL = 30 * 60
 STREAM_CONTEXT_TTL = 6 * 3600
 STREAM_CONTEXT_LIMIT = 300
 PLAYBACK_HEADER_DENYLIST = {"range", "if-range", "content-range", "content-length"}
+TRAKT_WATCHED_TTL = 60
+TRAKT_NEXT_SHOW_LIMIT = 15
 
 views.init(ADDON, HANDLE, VIEW_SECTIONS, VIEW_CANDIDATES)
 
@@ -159,6 +161,23 @@ def credential_value_from(data, keys):
     return ""
 
 
+def credential_bool_from(data, key, default=False):
+    if not isinstance(data, dict) or key not in data:
+        return default
+    value = data.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    return default
+
+
 def credential_value(*keys):
     return credential_value_from(load_credentials(), keys)
 
@@ -167,6 +186,8 @@ def save_credentials_template(path):
     data = {
         "aiostreams_url": "",
         "aiometadata_url": "",
+        "trakt_enabled": False,
+        "trakt_scrobble": True,
         "trakt_client_id": "",
         "trakt_client_secret": "",
         "trakt_redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
@@ -191,6 +212,25 @@ def load_resume_entries():
     if not isinstance(entries, list):
         return []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def save_resume_entries(entries):
+    path = profile_path(RESUME_FILE)
+    try:
+        atomic_json_dump(path, {"entries": entries}, indent=2, sort_keys=True)
+    except OSError as exc:
+        xbmc.log("AIOStreams could not save resume history: %s" % exc, xbmc.LOGWARNING)
+
+
+def remove_resume_entry(key):
+    if not key:
+        return False
+    entries = load_resume_entries()
+    kept = [entry for entry in entries if entry.get("key") != key]
+    if len(kept) == len(entries):
+        return False
+    save_resume_entries(kept)
+    return True
 
 
 def load_search_cache():
@@ -825,28 +865,40 @@ def find_catalog(catalog_type, catalog_id):
     return {}
 
 
-def add_directory(label, params, art=None, info=None):
+def apply_context_menu(item, context_menu=None, replace_context=False):
+    if not context_menu:
+        return
+    try:
+        item.addContextMenuItems(context_menu, replaceItems=replace_context)
+    except AttributeError:
+        pass
+
+
+def add_directory(label, params, art=None, info=None, context_menu=None, replace_context=False):
     item = xbmcgui.ListItem(label=label)
     set_item_art(item, art)
     if info:
         set_item_info(item, info)
+    apply_context_menu(item, context_menu, replace_context)
     xbmcplugin.addDirectoryItem(HANDLE, addon_url(**params), item, True)
 
 
-def add_action(label, params, art=None, info=None):
+def add_action(label, params, art=None, info=None, context_menu=None, replace_context=False):
     item = xbmcgui.ListItem(label=label)
     set_item_art(item, art)
     if info:
         set_item_info(item, info)
+    apply_context_menu(item, context_menu, replace_context)
     xbmcplugin.addDirectoryItem(HANDLE, addon_url(**params), item, False)
 
 
-def add_playable(label, params, art=None, info=None):
+def add_playable(label, params, art=None, info=None, context_menu=None, replace_context=False):
     item = xbmcgui.ListItem(label=label)
     item.setProperty("IsPlayable", "true")
     set_item_art(item, art)
     if info:
         set_item_info(item, info)
+    apply_context_menu(item, context_menu, replace_context)
     xbmcplugin.addDirectoryItem(HANDLE, addon_url(**params), item, False)
 
 
@@ -938,7 +990,7 @@ def art_from_json(value):
     return data if isinstance(data, dict) else {}
 
 
-def add_video_item(meta, item_type, item_id, art=None, watched_ids=None):
+def add_video_item(meta, item_type, item_id, art=None, watched_ids=None, resume=0, duration=0, season="", episode="", resume_key=""):
     label = meta.get("name") or meta.get("title") or item_id
     item_art = art or meta_art(meta) or fallback_art(item_type_art_key(item_type))
     info = meta_info(meta)
@@ -947,6 +999,16 @@ def add_video_item(meta, item_type, item_id, art=None, watched_ids=None):
     params = {"action": "details", "type": item_type, "id": item_id}
     if item_type == "movie":
         params = {"action": "streams", "type": item_type, "id": best_stream_id(meta, item_id), "title": label, "art": art_json(item_art)}
+    if resume:
+        params["resume"] = str(safe_int(resume))
+    if duration:
+        params["duration"] = str(safe_int(duration))
+    if season:
+        params["season"] = str(season)
+    if episode:
+        params["episode"] = str(episode)
+    if resume_key:
+        params["resume_key"] = str(resume_key)
     add_directory(label, params, item_art, info)
 
 
@@ -1126,7 +1188,7 @@ def trakt_enabled_for_lists():
     return trakt.configured() and trakt.authenticated()
 
 
-def cached_trakt_watched(media_type, ttl=3600):
+def cached_trakt_watched(media_type, ttl=TRAKT_WATCHED_TTL):
     global _API_CACHE_DIRTY
     if not trakt_enabled_for_lists() or not media_type:
         return []
@@ -1182,6 +1244,18 @@ def trakt_watched_episode_ids(show_imdb=""):
                 episode_number = safe_int(episode.get("number"))
                 if current_show_imdb and season_number and episode_number:
                     ids.add("%s:%d:%d" % (current_show_imdb, season_number, episode_number))
+    if show_imdb and not ids and trakt_enabled_for_lists():
+        try:
+            progress = trakt.show_progress(show_imdb)
+        except trakt.TraktError as exc:
+            xbmc.log("AIOStreams Trakt watched progress fetch failed for %s: %s" % (show_imdb, exc), xbmc.LOGWARNING)
+            return ids
+        for season in (progress or {}).get("seasons") or []:
+            season_number = safe_int(season.get("number"))
+            for episode in season.get("episodes") or []:
+                episode_number = safe_int(episode.get("number"))
+                if episode.get("completed") and season_number and episode_number:
+                    ids.add("%s:%d:%d" % (show_imdb, season_number, episode_number))
     return ids
 
 
@@ -1327,6 +1401,64 @@ def trakt_stream_target(entry):
     return {}
 
 
+def trakt_target_media_id(target):
+    if target.get("type") == "movie":
+        return target.get("id") or ""
+    return target.get("show_imdb") or target.get("show_id") or str(target.get("id") or "").split(":")[0]
+
+
+def enrich_trakt_target(target):
+    if not target:
+        return target
+    target = dict(target)
+    item_type = target.get("type") or "movie"
+    media_id = trakt_target_media_id(target)
+    if not media_id:
+        return target
+    try:
+        response = cached_service_json(join_url(aiometa_base(), "meta", item_type, media_id) + ".json", "aiometadata", META_CACHE_TTL)
+    except RuntimeError:
+        return target
+    meta = response.get("meta") or {}
+    if item_type == "movie":
+        enriched = enrich_meta("movie", dict(meta, id=media_id))
+        target["title"] = enriched.get("name") or enriched.get("title") or target.get("title")
+        target["art"] = meta_art(enriched) or target.get("art")
+        info = dict(meta_info(enriched))
+        info.update({key: value for key, value in (target.get("info") or {}).items() if value not in (None, "", [])})
+        target["info"] = info
+        target["duration"] = safe_int(info.get("duration")) or safe_int(target.get("duration"))
+        return target
+
+    show_art = meta_art(meta)
+    episode = None
+    for video in meta.get("videos") or []:
+        if video_season(video) == str(target.get("season")) and video_episode(video) == str(target.get("episode")):
+            episode = video
+            break
+    if not episode:
+        if show_art:
+            target["art"] = show_art
+        info = dict(target.get("info") or {})
+        if not info.get("plot"):
+            info["plot"] = meta.get("description") or meta.get("overview") or meta.get("plot") or ""
+        if meta.get("name") or meta.get("title"):
+            info.setdefault("tvshowtitle", meta.get("name") or meta.get("title"))
+        if info:
+            target["info"] = info
+        return target
+
+    show_title = meta.get("name") or meta.get("title") or ""
+    episode_title = episode.get("title") or episode.get("name") or target.get("title")
+    target["title"] = resume_episode_title(show_title, target.get("season"), target.get("episode"), episode_title)
+    target["art"] = episode_art(meta, episode) or show_art or target.get("art")
+    info = episode_info(episode, meta, target.get("season"), target.get("episode"))
+    info.update({key: value for key, value in (target.get("info") or {}).items() if value not in (None, "", [])})
+    target["info"] = info
+    target["duration"] = safe_int(info.get("duration")) or safe_int(target.get("duration"))
+    return target
+
+
 def trakt_progress_position(entry, target):
     duration = safe_int(target.get("duration")) or trakt_runtime_seconds(entry.get("movie") or entry.get("episode") or {})
     progress = entry.get("progress")
@@ -1339,7 +1471,110 @@ def trakt_progress_position(entry, target):
     return int(duration * max(0, min(100, percent)) / 100.0)
 
 
-def add_trakt_stream_directory(label, target, resume=0):
+def trakt_resume_show_ids(entries):
+    show_ids = set()
+    for entry in entries:
+        show = entry.get("show") if isinstance(entry, dict) else {}
+        show_id = trakt_imdb_id(show)
+        if show_id:
+            show_ids.add(show_id)
+            continue
+        target = trakt_stream_target(entry)
+        if target.get("show_imdb"):
+            show_ids.add(target.get("show_imdb"))
+    return show_ids
+
+
+def recent_trakt_history_shows(entries, limit=30):
+    shows = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        show = entry.get("show") if isinstance(entry.get("show"), dict) else {}
+        show_id = trakt_imdb_id(show)
+        if not show_id or show_id in seen:
+            continue
+        seen.add(show_id)
+        shows.append({
+            "show": show,
+            "show_id": show_id,
+            "watched_at": entry.get("watched_at") or "",
+        })
+        if len(shows) >= limit:
+            break
+    return shows
+
+
+def next_episode_from_show_progress(progress):
+    if isinstance(progress.get("next_episode"), dict):
+        return progress.get("next_episode")
+    latest = None
+    for season in progress.get("seasons") or []:
+        season_number = safe_int(season.get("number"))
+        for episode in season.get("episodes") or []:
+            if not episode.get("completed"):
+                continue
+            current = (
+                str(episode.get("last_watched_at") or ""),
+                season_number,
+                safe_int(episode.get("number")),
+            )
+            if latest is None or current > latest:
+                latest = current
+    if not latest:
+        return {}
+    _, season_number, episode_number = latest
+    if not season_number or not episode_number:
+        return {}
+    return {"season": season_number, "number": episode_number + 1, "title": "Episode %s" % (episode_number + 1)}
+
+
+def trakt_next_target_from_history(item):
+    try:
+        progress = trakt.show_progress(item.get("show_id"))
+    except trakt.TraktError as exc:
+        xbmc.log("AIOStreams Trakt next progress failed for %s: %s" % (item.get("show_id"), exc), xbmc.LOGWARNING)
+        return None
+    episode = next_episode_from_show_progress(progress if isinstance(progress, dict) else {})
+    if not episode:
+        return None
+    entry = {
+        "type": "episode",
+        "show": item.get("show"),
+        "episode": episode,
+        "watched_at": item.get("watched_at") or "",
+    }
+    target = trakt_stream_target(entry)
+    if not target.get("id"):
+        return None
+    return entry.get("watched_at"), target
+
+
+def trakt_next_entries(history_entries, playback_entries, limit=TRAKT_NEXT_SHOW_LIMIT):
+    paused_show_ids = trakt_resume_show_ids(playback_entries)
+    seen_targets = set()
+    candidates = [
+        item for item in recent_trakt_history_shows(history_entries, limit)
+        if item.get("show_id") not in paused_show_ids
+    ]
+    entries = []
+    for result in parallel_map(trakt_next_target_from_history, candidates):
+        if not result:
+            continue
+        watched_at, target = result
+        target_id = target.get("id")
+        if not target_id or target_id in seen_targets:
+            continue
+        seen_targets.add(target_id)
+        entries.append((watched_at, target))
+    return [target for _, target in sorted(entries, key=lambda item: item[0], reverse=True)]
+
+
+def add_trakt_stream_directory(label, target, resume=0, enrich=True, context_menu=None, replace_context=False):
+    if enrich:
+        target = enrich_trakt_target(target)
+    label = target.get("title") or label
     params = {
         "action": "streams",
         "type": target.get("type", "movie"),
@@ -1354,7 +1589,7 @@ def add_trakt_stream_directory(label, target, resume=0):
         "season": target.get("season", ""),
         "episode": target.get("episode", ""),
     }
-    add_directory(label, params, target.get("art"), target.get("info"))
+    add_directory(label, params, target.get("art"), target.get("info"), context_menu=context_menu, replace_context=replace_context)
 
 
 def add_trakt_show_directory(entry, playcount=0):
@@ -1617,7 +1852,7 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
     set_view("movies", "view_results")
 
 
-def list_details(item_type, item_id):
+def list_details(item_type, item_id, resume=0, duration=0, target_season="", target_episode="", resume_key=""):
     url = join_url(aiometa_base(), "meta", item_type, item_id) + ".json"
     try:
         response = cached_service_json(url, "aiometadata", META_CACHE_TTL)
@@ -1647,6 +1882,10 @@ def list_details(item_type, item_id):
                 "type": item_type,
                 "id": item_id,
                 "season": season,
+                "resume": str(safe_int(resume)) if str(season) == str(target_season) else "0",
+                "duration": str(safe_int(duration)) if str(season) == str(target_season) else "0",
+                "episode": str(target_episode) if str(season) == str(target_season) else "",
+                "resume_key": str(resume_key) if str(season) == str(target_season) else "",
             }, season_art(meta, season, tvmaze_seasons.get(str(season))), season_info(meta, season))
     else:
         add_directory("Sources", {
@@ -1655,12 +1894,15 @@ def list_details(item_type, item_id):
             "id": best_stream_id(meta, item_id),
             "title": title,
             "art": art_json(meta_art(meta)),
+            "resume": str(safe_int(resume)),
+            "duration": str(safe_int(duration)),
+            "resume_key": str(resume_key),
         }, meta_art(meta), meta_info(meta))
 
     set_view("seasons" if videos else "movies", "view_seasons" if videos else "view_results")
 
 
-def list_episodes(item_type, item_id, season):
+def list_episodes(item_type, item_id, season, resume=0, duration=0, target_episode="", resume_key=""):
     url = join_url(aiometa_base(), "meta", item_type, item_id) + ".json"
     try:
         response = cached_service_json(url, "aiometadata", META_CACHE_TTL)
@@ -1717,6 +1959,9 @@ def list_episodes(item_type, item_id, season):
             "episode": episode,
             "title": content_title,
             "art": art_json(item_art),
+            "resume": str(safe_int(resume)) if not target_episode or str(episode) == str(target_episode) else "0",
+            "duration": str(safe_int(duration)) if not target_episode or str(episode) == str(target_episode) else "0",
+            "resume_key": str(resume_key) if not target_episode or str(episode) == str(target_episode) else "",
         }, item_art, info)
     set_view("episodes", "view_episodes")
 
@@ -2127,7 +2372,7 @@ def sanitize_playback_headers(headers):
     }
 
 
-def list_streams(item_type, item_id, content_title="", content_art_json="", video_id="", show_id="", show_imdb="", season="", episode="", resume=0, duration=0):
+def list_streams(item_type, item_id, content_title="", content_art_json="", video_id="", show_id="", show_imdb="", season="", episode="", resume=0, duration=0, resume_key=""):
     base = aiostreams_base()
     if not base:
         error("AIOStreams manifest URL is not configured")
@@ -2137,6 +2382,8 @@ def list_streams(item_type, item_id, content_title="", content_art_json="", vide
     try:
         response = get_json(service_url(url, "aiostreams"))
     except RuntimeError as exc:
+        if open_stream_search_fallback(item_type, content_title or item_id, season, episode, resume, duration, resume_key, str(exc)):
+            return
         error(str(exc))
         set_view()
         return
@@ -2152,7 +2399,7 @@ def list_streams(item_type, item_id, content_title="", content_art_json="", vide
         info = {"title": label, "plot": stream_plot(stream)}
         if stream_url and stream_url.startswith(("http://", "https://")):
             playable_count += 1
-            token = register_stream_context({
+            context = {
                 "url": stream_url,
                 "headers": stream_headers(stream),
                 "item_id": item_id,
@@ -2167,7 +2414,10 @@ def list_streams(item_type, item_id, content_title="", content_art_json="", vide
                 "title": content_title or item_id,
                 "stream_title": label,
                 "art": content_art,
-            }, stream_contexts, save=False)
+            }
+            if resume_key:
+                context["key"] = resume_key
+            token = register_stream_context(context, stream_contexts, save=False)
             add_playable(label, {
                 "action": "play_token",
                 "token": token,
@@ -2176,6 +2426,8 @@ def list_streams(item_type, item_id, content_title="", content_art_json="", vide
             add_directory("Unsupported: " + label, {"action": "noop"}, art=fallback_art("sources"), info=info)
 
     if not playable_count:
+        if open_stream_search_fallback(item_type, content_title or item_id, season, episode, resume, duration, resume_key, "no direct playable HTTP streams"):
+            return
         notify("No direct playable HTTP streams returned")
     else:
         save_stream_contexts(stream_contexts)
@@ -2213,6 +2465,10 @@ def playback_url_and_headers(original_url, resolved_url, headers):
     return resolved_url, playback_headers
 
 
+def kodi_direct_url_and_headers(resolved_url, headers):
+    return resolved_url, sanitize_playback_headers(headers)
+
+
 def kodi_builtin_headers(headers):
     # Cache-busters and Connection: close work around Kodi's CCurlFile
     # handle-pool reuse; they must not leak into the forwarder's upstream
@@ -2246,6 +2502,10 @@ def playback_mime(url, title=""):
 def play(url, headers_json, resume_seconds=0, context=None):
     context = context or {}
     if not url:
+        if context:
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+            if open_resume_fallback(context, resume_seconds, safe_int(context.get("duration")), "missing playback URL"):
+                return
         error("Playback URL is missing")
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
@@ -2258,11 +2518,16 @@ def play(url, headers_json, resume_seconds=0, context=None):
         resolved_url = resolve_playback_redirect(url, headers)
     except RuntimeError as exc:
         xbmc.log("AIOStreams playback resolve failed for %s: %s" % (redact_url(url), exc), xbmc.LOGERROR)
+        if context:
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+            if open_resume_fallback(context, resume_seconds, safe_int(context.get("duration")), str(exc)):
+                return
         error(str(exc))
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
 
     playback_url, playback_headers = playback_url_and_headers(url, resolved_url, headers)
+    direct_url, direct_headers = kodi_direct_url_and_headers(resolved_url, headers)
     resolved_host = urllib.parse.urlparse(playback_url).netloc
     mime = playback_mime(playback_url, context.get("stream_title") or context.get("title") or "")
     xbmc.log("AIOStreams resolved playback host: %s, headers: %s, mime: %s" % (
@@ -2270,16 +2535,16 @@ def play(url, headers_json, resume_seconds=0, context=None):
         ",".join(sorted(playback_headers.keys())) or "none",
         mime or "auto",
     ), xbmc.LOGINFO)
-    if setting_bool("use_local_forwarder", True):
+    if setting_bool("use_local_forwarder", False):
         try:
             item_path = register_forwarder_url(playback_url, playback_headers, context)
             xbmc.log("AIOStreams playback engine: local-forwarder", xbmc.LOGINFO)
         except Exception as exc:
             xbmc.log("AIOStreams local forwarder registration failed, using direct playback: %s" % exc, xbmc.LOGWARNING)
-            item_path = kodi_header_url(playback_url, kodi_builtin_headers(playback_headers))
+            item_path = kodi_header_url(direct_url, kodi_builtin_headers(direct_headers))
             xbmc.log("AIOStreams playback engine: kodi-builtin", xbmc.LOGINFO)
     else:
-        item_path = kodi_header_url(playback_url, kodi_builtin_headers(playback_headers))
+        item_path = kodi_header_url(direct_url, kodi_builtin_headers(direct_headers))
         xbmc.log("AIOStreams playback engine: kodi-builtin", xbmc.LOGINFO)
     item = xbmcgui.ListItem(path=item_path)
     item.setPath(item_path)
@@ -2327,6 +2592,164 @@ def should_keep_resume(position, duration):
     return True
 
 
+def direct_playback_url(url):
+    return str(url or "").startswith(("http://", "https://"))
+
+
+def resume_entry_type(entry):
+    item_type = str(entry.get("item_type") or "")
+    if item_type in ("movie", "series"):
+        return item_type
+    if entry.get("season") or entry.get("episode") or entry.get("show_id") or entry.get("show_imdb"):
+        return "series"
+    if parse_stremio_episode_id(entry.get("video_id") or entry.get("item_id")):
+        return "series"
+    return "movie"
+
+
+def resume_entry_stream_id(entry, item_type):
+    item_id = str(entry.get("item_id") or "")
+    video_id = str(entry.get("video_id") or "")
+    if item_type != "series":
+        return item_id or video_id
+
+    for value in (item_id, video_id):
+        if value and parse_stremio_episode_id(value):
+            return value
+
+    season = str(entry.get("season") or "")
+    episode = str(entry.get("episode") or "")
+    if season and episode:
+        base = str(entry.get("show_imdb") or entry.get("show_id") or item_id or "")
+        if base:
+            return "%s:%s:%s" % (base, season, episode)
+    return item_id or video_id
+
+
+def resume_search_query(entry):
+    title = str(entry.get("title") or entry.get("stream_title") or "").strip()
+    if resume_entry_type(entry) == "series":
+        match = re.match(r"(.+?)\s+-\s+S\d+E\d+\s+-\s+.+", title, re.I)
+        if match:
+            return match.group(1).strip()
+    return title
+
+
+def resume_sources_params(entry, position=0, duration=0, art=None):
+    item_type = resume_entry_type(entry)
+    stream_id = resume_entry_stream_id(entry, item_type)
+    title = str(entry.get("title") or entry.get("stream_title") or stream_id or "").strip()
+    entry_art = art if isinstance(art, dict) else art_from_json(entry.get("art"))
+    position = safe_int(position or entry.get("resume") or entry.get("position"))
+    duration = safe_int(duration or entry.get("duration"))
+    season = str(entry.get("season") or "")
+    episode = str(entry.get("episode") or "")
+    resume_key = str(entry.get("key") or entry.get("resume_key") or "")
+
+    if stream_id:
+        return {
+            "action": "streams",
+            "type": item_type,
+            "id": stream_id,
+            "title": title,
+            "art": art_json(entry_art),
+            "resume": str(position),
+            "duration": str(duration),
+            "video_id": entry.get("video_id") or "",
+            "show_id": entry.get("show_id") or "",
+            "show_imdb": entry.get("show_imdb") or "",
+            "season": season,
+            "episode": episode,
+            "resume_key": resume_key,
+        }
+
+    query = resume_search_query(entry)
+    if not query:
+        return {}
+    return {
+        "action": "search",
+        "type": item_type,
+        "query": query,
+        "resume": str(position),
+        "duration": str(duration),
+        "season": season,
+        "episode": episode,
+        "resume_key": resume_key,
+    }
+
+
+def open_resume_fallback(entry, position=0, duration=0, reason=""):
+    params = resume_sources_params(entry, position, duration)
+    if not params:
+        return False
+    if reason:
+        xbmc.log("AIOStreams opening resume source fallback: %s" % reason, xbmc.LOGWARNING)
+    xbmc.executebuiltin("Container.Update(%s)" % addon_url(**params))
+    return True
+
+
+def stream_search_query(item_type, title):
+    title = str(title or "").strip()
+    if item_type == "series":
+        match = re.match(r"(.+?)\s+-\s+S\d+E\d+\s+-\s+.+", title, re.I)
+        if match:
+            return match.group(1).strip()
+    return title
+
+
+def open_stream_search_fallback(item_type, title, season="", episode="", resume=0, duration=0, resume_key="", reason=""):
+    if not resume:
+        return False
+    query = stream_search_query(item_type, title)
+    if not query:
+        return False
+    if reason:
+        xbmc.log("AIOStreams opening stream search fallback: %s" % reason, xbmc.LOGWARNING)
+    xbmc.executebuiltin("Container.Update(%s)" % addon_url(
+        action="search",
+        type=item_type,
+        query=query,
+        resume=str(safe_int(resume)),
+        duration=str(safe_int(duration)),
+        season=str(season or ""),
+        episode=str(episode or ""),
+        resume_key=str(resume_key or ""),
+    ))
+    return True
+
+
+def resume_context_menu(entry):
+    key = entry.get("key") or ""
+    if not key:
+        return []
+    return [("Remove from Resume", "RunPlugin(%s)" % addon_url(action="resume_mark_watched", key=key))]
+
+
+def trakt_resume_context_menu(entry):
+    playback_id = entry.get("id") if isinstance(entry, dict) else ""
+    if not playback_id:
+        return []
+    return [("Remove from Resume", "RunPlugin(%s)" % addon_url(action="trakt_resume_remove", id=playback_id))]
+
+
+def resume_art(entry, art):
+    art = dict(art or {})
+    if entry.get("item_type") != "movie":
+        return art or fallback_art("sources")
+    image = art.get("landscape") or art.get("fanart") or art.get("thumb") or art.get("poster") or art.get("icon")
+    if not image:
+        return fallback_landscape_art("movie")
+    result = dict(art)
+    result.update({
+        "thumb": image,
+        "thumbnail": image,
+        "icon": image,
+        "landscape": image,
+    })
+    result.setdefault("fanart", image)
+    return result
+
+
 def search_catalogs(search_type=""):
     try:
         manifest = get_manifest()
@@ -2365,17 +2788,33 @@ def trakt_status():
     configured = "yes" if trakt.configured() else "no"
     enabled = "yes" if trakt.enabled() else "no"
     authenticated = "yes" if trakt.authenticated() else "no"
-    token_path = trakt.profile_path(trakt.TOKENS_FILE)
     xbmcgui.Dialog().ok(
         "AIOStreams Trakt",
-        "Configured: %s\nEnabled: %s\nAuthenticated: %s\n\nToken file:\n%s" % (
+        "Configured: %s\nEnabled: %s\nAuthenticated: %s" % (
             configured,
             enabled,
             authenticated,
-            token_path,
         ),
     )
     settings_menu()
+
+
+def trakt_auth_message(verification_url, user_code):
+    return "Go to %s\nCode: %s" % (verification_url, user_code)
+
+
+def progress_create(progress, heading, message):
+    try:
+        progress.create(heading, message)
+    except TypeError:
+        progress.create(heading + "\n" + message)
+
+
+def progress_update(progress, percent, message):
+    try:
+        progress.update(percent, message)
+    except TypeError:
+        progress.update(percent)
 
 
 def trakt_authenticate():
@@ -2402,9 +2841,10 @@ def trakt_authenticate():
 
     progress = None
     progress_class = getattr(xbmcgui, "DialogProgress", None)
+    progress_message = trakt_auth_message(verification_url, user_code)
     if progress_class:
         progress = progress_class()
-        progress.create("AIOStreams Trakt", "Go to %s" % verification_url, "Code: %s" % user_code)
+        progress_create(progress, "AIOStreams Trakt", progress_message)
     else:
         xbmcgui.Dialog().ok(
             "AIOStreams Trakt",
@@ -2421,7 +2861,7 @@ def trakt_authenticate():
                         break
                     elapsed = expires_in - int(deadline - time.time())
                     percent = int(max(0, min(100, elapsed * 100 / max(1, expires_in))))
-                    progress.update(percent, "Go to %s" % verification_url, "Code: %s" % user_code)
+                    progress_update(progress, percent, progress_message)
                 except Exception:
                     pass
             try:
@@ -2473,6 +2913,7 @@ def list_trakt():
         set_view("videos")
         return
     add_directory("Resume", {"action": "trakt_progress", "type": "all"}, fallback_art("sources"))
+    add_directory("Next Up", {"action": "trakt_next"}, fallback_art("series"))
     add_directory("Watchlist Movies", {"action": "trakt_watchlist", "type": "movies"}, fallback_art("movie"))
     add_directory("Watchlist Shows", {"action": "trakt_watchlist", "type": "shows"}, fallback_art("series"))
     add_directory("Watched Movies", {"action": "trakt_watched", "type": "movies"}, fallback_art("movie"))
@@ -2510,7 +2951,7 @@ def add_trakt_progress_entry(entry):
     if not should_keep_resume(position, safe_int(target.get("duration"))):
         return False
     label = resume_label({"title": target.get("title")}, position, safe_int(target.get("duration")))
-    add_trakt_stream_directory(label, target, position)
+    add_trakt_stream_directory(label, target, position, context_menu=trakt_resume_context_menu(entry))
     return True
 
 
@@ -2523,6 +2964,19 @@ def list_trakt_progress(media_type="all"):
     if not count:
         add_directory("No Trakt resume items", {"action": "noop"}, fallback_art("sources"), {"title": "No Trakt resume items"})
     set_view("videos", "view_results", cache_to_disc=False)
+
+
+def list_trakt_next():
+    xbmcplugin.setPluginCategory(HANDLE, "Trakt Next Up")
+    history_entries = fetch_trakt_items(lambda: trakt.history("episodes", 120), "Trakt next")
+    playback_entries = fetch_trakt_items(lambda: trakt.playback("episodes"), "Trakt resume")
+    count = 0
+    for target in trakt_next_entries(history_entries, playback_entries):
+        add_trakt_stream_directory(target.get("title"), target, enrich=False)
+        count += 1
+    if not count:
+        add_directory("No Trakt next up items", {"action": "noop"}, fallback_art("series"), {"title": "No Trakt next up items"})
+    set_view("episodes", "view_episodes", cache_to_disc=False)
 
 
 def list_trakt_watchlist(media_type):
@@ -2592,13 +3046,14 @@ def list_resume():
         position = safe_int(entry.get("position"))
         duration = safe_int(entry.get("duration"))
         label = resume_label(entry, position, duration)
-        entry_art = art_from_json(entry.get("art")) or fallback_art("sources")
+        entry_art = resume_art(entry, art_from_json(entry.get("art")))
         info = {"title": entry.get("title") or label, "plot": entry.get("stream_title") or ""}
         if entry.get("item_type") == "series":
             info["mediatype"] = "episode"
         if duration:
             info["duration"] = duration
-        token = register_stream_context({
+        context_menu = resume_context_menu(entry)
+        context = {
             "url": entry.get("url") or "",
             "headers": entry.get("headers") or {},
             "resume": position,
@@ -2614,12 +3069,20 @@ def list_resume():
             "episode": entry.get("episode") or "",
             "key": entry.get("key") or "",
             "art": entry_art,
-        }, stream_contexts, save=False)
-        add_playable(label, {
-            "action": "play_token",
-            "token": token,
-            "resume": str(position),
-        }, art=entry_art, info=info)
+        }
+        if direct_playback_url(context.get("url")):
+            token = register_stream_context(context, stream_contexts, save=False)
+            add_playable(label, {
+                "action": "play_token",
+                "token": token,
+                "resume": str(position),
+            }, art=entry_art, info=info, context_menu=context_menu)
+        else:
+            params = resume_sources_params(context, position, duration, entry_art)
+            if params:
+                add_directory(label, params, entry_art, info, context_menu=context_menu)
+            else:
+                add_directory(label, {"action": "noop"}, entry_art, info, context_menu=context_menu)
         count += 1
     if entries:
         save_stream_contexts(stream_contexts)
@@ -2630,6 +3093,21 @@ def list_resume():
     if not count:
         add_directory("No resumable items", {"action": "noop"}, fallback_art("sources"), {"title": "No resumable items"})
     set_view("episodes" if count else "videos", "view_episodes", cache_to_disc=False)
+
+
+def mark_resume_watched(key):
+    if remove_resume_entry(key):
+        xbmc.executebuiltin("Container.Refresh")
+
+
+def remove_trakt_resume(playback_id):
+    if not playback_id:
+        return
+    try:
+        if trakt.remove_playback(playback_id):
+            xbmc.executebuiltin("Container.Refresh")
+    except trakt.TraktError as exc:
+        error("Trakt resume remove failed: %s" % exc)
 
 
 def resume_label(entry, position, duration):
@@ -2648,12 +3126,12 @@ def format_hms(seconds):
     return "%dm" % minutes
 
 
-def search(search_type="", query=""):
+def search(search_type="", query="", resume=0, duration=0, season="", episode="", resume_key=""):
     query = query.strip()
     if not query:
         query = xbmcgui.Dialog().input("Search " + metadata_provider_label(), type=xbmcgui.INPUT_ALPHANUM).strip()
         if query:
-            search(search_type, query)
+            search(search_type, query, resume, duration, season, episode, resume_key)
         else:
             set_view("movies", "view_search", fallback_view_setting="view_results")
         return
@@ -2666,7 +3144,7 @@ def search(search_type="", query=""):
             item_type = result.get("type") if isinstance(result, dict) else ""
             item_id = result.get("id") if isinstance(result, dict) else ""
             if meta and item_type and item_id:
-                add_video_item(meta, item_type, item_id, search_result_art(meta, item_type))
+                add_video_item(meta, item_type, item_id, search_result_art(meta, item_type), resume=resume, duration=duration, season=season, episode=episode, resume_key=resume_key)
         set_view("movies", "view_search", fallback_view_setting="view_results")
         return
 
@@ -2701,7 +3179,7 @@ def search(search_type="", query=""):
         enriched_batch = parallel_map(lambda entry: enrich_meta(entry[0], entry[2]), batch)
         for (item_type, item_id, _meta), enriched in zip(batch, enriched_batch):
             results.append({"type": item_type, "id": item_id, "meta": enriched})
-            add_video_item(enriched, item_type, item_id, search_result_art(enriched, item_type))
+            add_video_item(enriched, item_type, item_id, search_result_art(enriched, item_type), resume=resume, duration=duration, season=season, episode=episode, resume_key=resume_key)
         if len(results) >= result_limit:
             break
     if results:
@@ -2778,13 +3256,15 @@ def credentials_info():
     aios_source = "Kodi setting" if aios_setting else ("credentials file" if aios_credentials else "not configured")
     aiometa_source = "Kodi setting" if aiometa_setting else ("credentials file" if aiometa_credentials else "Cinemeta fallback")
     trakt_client_source = "Kodi setting" if setting("trakt_client_id") else ("credentials file" if credential_value_from(data, ("trakt_client_id", "trakt_api_key", "trakt_client")) else "not configured")
+    trakt_enabled_source = "credentials file" if credential_bool_from(data, "trakt_enabled", False) else ("Kodi setting" if setting_bool("trakt_enabled", False) else "disabled")
     xbmcgui.Dialog().ok(
         "AIOStreams Credentials",
-        "Edit this JSON file to configure manifest URLs and optional Trakt API credentials:\n\n%s\n\nStatus: %s\nAIOStreams: %s\nMetadata: %s\nTrakt client: %s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)\ntrakt_client_id\ntrakt_client_secret\ntrakt_redirect_uri" % (
+        "Edit this JSON file to configure manifest URLs and optional Trakt API credentials:\n\n%s\n\nStatus: %s\nAIOStreams: %s\nMetadata: %s\nTrakt enabled: %s\nTrakt client: %s\n\nKeys:\naiostreams_url\naiometadata_url (optional; Cinemeta is used when blank)\ntrakt_enabled\ntrakt_scrobble\ntrakt_client_id\ntrakt_client_secret\ntrakt_redirect_uri" % (
             path,
             status,
             aios_source,
             aiometa_source,
+            trakt_enabled_source,
             trakt_client_source,
         ),
     )
@@ -2842,6 +3322,10 @@ def dispatch():
         list_trakt()
     elif action == "trakt_progress":
         list_trakt_progress(params.get("type", "all"))
+    elif action == "trakt_resume_remove":
+        remove_trakt_resume(params.get("id", ""))
+    elif action == "trakt_next":
+        list_trakt_next()
     elif action == "trakt_watchlist":
         list_trakt_watchlist(params.get("type", "movies"))
     elif action == "trakt_history":
@@ -2861,9 +3345,25 @@ def dispatch():
     elif action == "catalog":
         list_catalog(params.get("type", "movie"), params.get("id", ""), params.get("genre", ""), safe_int(params.get("skip", "0")))
     elif action == "details":
-        list_details(params.get("type", "movie"), params.get("id", ""))
+        list_details(
+            params.get("type", "movie"),
+            params.get("id", ""),
+            safe_int(params.get("resume")),
+            safe_int(params.get("duration")),
+            params.get("season", ""),
+            params.get("episode", ""),
+            params.get("resume_key", ""),
+        )
     elif action == "episodes":
-        list_episodes(params.get("type", "series"), params.get("id", ""), params.get("season", "1"))
+        list_episodes(
+            params.get("type", "series"),
+            params.get("id", ""),
+            params.get("season", "1"),
+            safe_int(params.get("resume")),
+            safe_int(params.get("duration")),
+            params.get("episode", ""),
+            params.get("resume_key", ""),
+        )
     elif action == "streams":
         list_streams(
             params.get("type", "movie"),
@@ -2877,6 +3377,7 @@ def dispatch():
             params.get("episode", ""),
             safe_int(params.get("resume")),
             safe_int(params.get("duration")),
+            params.get("resume_key", ""),
         )
     elif action == "play":
         play(params.get("url", ""), params.get("headers", "{}"), 0, {
@@ -2897,6 +3398,8 @@ def dispatch():
         play_token(params.get("token", ""), safe_int(params.get("resume")))
     elif action == "resume":
         list_resume()
+    elif action == "resume_mark_watched":
+        mark_resume_watched(params.get("key", ""))
     elif action == "resume_play":
         play(params.get("url", ""), params.get("headers", "{}"), safe_int(params.get("resume")), {
             "key": params.get("key", ""),
@@ -2915,7 +3418,15 @@ def dispatch():
     elif action == "search_menu":
         search_menu()
     elif action == "search":
-        search(params.get("type", ""), params.get("query", ""))
+        search(
+            params.get("type", ""),
+            params.get("query", ""),
+            safe_int(params.get("resume")),
+            safe_int(params.get("duration")),
+            params.get("season", ""),
+            params.get("episode", ""),
+            params.get("resume_key", ""),
+        )
     elif action == "view_mode_setup":
         view_mode_setup()
     elif action == "view_mode_candidates":

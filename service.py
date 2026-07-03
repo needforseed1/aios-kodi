@@ -93,13 +93,48 @@ def save_resume_entries(entries):
         xbmc.log("AIOStreams service could not save resume history: %s" % exc, xbmc.LOGWARNING)
 
 
+def playback_media_key(context):
+    item_type = context.get("item_type") or ""
+    item_id = str(context.get("item_id") or "")
+    if item_type == "movie" and item_id:
+        return "movie:%s" % item_id
+
+    video_id = str(context.get("video_id") or item_id or "")
+    if item_type in ("series", "episode") or video_id or context.get("season") or context.get("episode"):
+        if video_id:
+            parts = video_id.split(":")
+            if len(parts) >= 3 and parts[-2].isdigit() and parts[-1].isdigit():
+                return "episode:%s:%s:%s" % (parts[0], parts[-2], parts[-1])
+        season = str(context.get("season") or "")
+        episode = str(context.get("episode") or "")
+        show_id = str(context.get("show_imdb") or context.get("show_id") or item_id or "")
+        if show_id and season and episode:
+            return "episode:%s:%s:%s" % (show_id.split(":")[0], season, episode)
+    return ""
+
+
 def resume_key(url, item_id="", stream_title=""):
     value = "%s|%s|%s" % (item_id, stream_title, url)
     return hashlib.sha1(value.encode("utf-8")).hexdigest()
 
 
+def resume_entry_aliases(entry):
+    aliases = set()
+    key = entry.get("key")
+    if key:
+        aliases.add(key)
+    media_key = playback_media_key(entry)
+    if media_key:
+        aliases.add(media_key)
+    url_key = resume_key(entry.get("url", ""), entry.get("item_id", ""), entry.get("stream_title", ""))
+    if url_key:
+        aliases.add(url_key)
+    return aliases
+
+
 def upsert_resume_entry(entry):
-    entries = [item for item in load_resume_entries() if item.get("key") != entry.get("key")]
+    aliases = resume_entry_aliases(entry)
+    entries = [item for item in load_resume_entries() if item.get("key") not in aliases]
     entry["updated"] = int(time.time())
     entries.insert(0, entry)
     save_resume_entries(entries)
@@ -144,7 +179,7 @@ def fresh_context(context):
 
 
 def entry_from_context(context):
-    key = context.get("key") or resume_key(context.get("url", ""), context.get("item_id", ""), context.get("stream_title", ""))
+    key = context.get("key") or playback_media_key(context) or resume_key(context.get("url", ""), context.get("item_id", ""), context.get("stream_title", ""))
     return {
         "key": key,
         "title": context.get("title") or context.get("stream_title") or "Untitled",

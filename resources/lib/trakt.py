@@ -84,6 +84,29 @@ def credential_value(*keys):
     return ""
 
 
+def credential_bool(key, default=False):
+    data = load_credentials()
+    if not isinstance(data, dict) or key not in data:
+        return default
+    value = data.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    return default
+
+
+def credential_has_key(key):
+    data = load_credentials()
+    return isinstance(data, dict) and key in data
+
+
 def client_id():
     return setting("trakt_client_id") or credential_value("trakt_client_id", "trakt_api_key", "trakt_client")
 
@@ -101,11 +124,15 @@ def configured():
 
 
 def enabled():
-    return setting_bool("trakt_enabled", False) and configured()
+    return configured() and (setting_bool("trakt_enabled", False) or credential_bool("trakt_enabled", False))
 
 
 def scrobble_enabled():
-    return enabled() and setting_bool("trakt_scrobble", True)
+    if not enabled():
+        return False
+    if credential_has_key("trakt_scrobble"):
+        return credential_bool("trakt_scrobble", True)
+    return setting_bool("trakt_scrobble", True)
 
 
 def load_tokens():
@@ -273,6 +300,13 @@ def playback(media_type, limit=50):
     }))
 
 
+def remove_playback(playback_id):
+    if not playback_id:
+        return False
+    api_request("/sync/playback/%s" % urllib.parse.quote(str(playback_id), safe=""), method="DELETE")
+    return True
+
+
 def watchlist(media_type, limit=50):
     return api_request(with_query("/sync/watchlist/%s/rank/asc" % media_type, {
         "extended": "full",
@@ -289,6 +323,15 @@ def history(media_type, limit=50):
 
 def watched(media_type):
     return api_request(with_query("/sync/watched/%s" % media_type, {
+        "extended": "full",
+    }))
+
+
+def show_progress(show_id):
+    return api_request(with_query("/shows/%s/progress/watched" % urllib.parse.quote(str(show_id), safe=""), {
+        "hidden": "false",
+        "specials": "false",
+        "count_specials": "false",
         "extended": "full",
     }))
 
