@@ -114,3 +114,62 @@ def test_display_rating():
     assert addon.display_rating("7.456") == "7.5"
     assert addon.display_rating(0) == ""
     assert addon.display_rating(None) == ""
+
+
+def test_trakt_stream_target_movie():
+    target = addon.trakt_stream_target({
+        "type": "movie",
+        "plays": 2,
+        "movie": {
+            "title": "Movie",
+            "year": 2020,
+            "runtime": 100,
+            "ids": {"imdb": "tt1234567"},
+        },
+    })
+
+    assert target["type"] == "movie"
+    assert target["id"] == "tt1234567"
+    assert target["title"] == "Movie"
+    assert target["duration"] == 6000
+    assert target["info"]["playcount"] == 2
+
+
+def test_trakt_stream_target_episode():
+    target = addon.trakt_stream_target({
+        "episode": {
+            "title": "Pilot",
+            "season": 1,
+            "number": 2,
+            "runtime": 45,
+        },
+        "show": {
+            "title": "Show",
+            "ids": {"imdb": "tt7654321"},
+        },
+    })
+
+    assert target["type"] == "series"
+    assert target["id"] == "tt7654321:1:2"
+    assert target["show_imdb"] == "tt7654321"
+    assert target["title"] == "Show - S01E02 - Pilot"
+    assert target["duration"] == 2700
+
+
+def test_trakt_progress_position():
+    target = {"duration": 3600}
+    assert addon.trakt_progress_position({"progress": 25}, target) == 900
+    assert addon.trakt_progress_position({"progress": 125}, target) == 3600
+
+
+def test_trakt_watched_episode_ids(monkeypatch):
+    monkeypatch.setattr(addon, "cached_trakt_watched", lambda media_type: [{
+        "show": {"ids": {"imdb": "tt7654321"}},
+        "seasons": [{
+            "number": 1,
+            "episodes": [{"number": 2}, {"number": 3}],
+        }],
+    }])
+
+    assert addon.trakt_watched_episode_ids("tt7654321") == {"tt7654321:1:2", "tt7654321:1:3"}
+    assert addon.trakt_watched_episode_ids("tt0000000") == set()

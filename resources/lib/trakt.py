@@ -256,6 +256,43 @@ def api_request(path, method="GET", body=None, oauth=True):
         return data
 
 
+def with_query(path, params):
+    params = {
+        key: value for key, value in (params or {}).items()
+        if value not in (None, "")
+    }
+    if not params:
+        return path
+    return path + "?" + urllib.parse.urlencode(params)
+
+
+def playback(media_type, limit=50):
+    return api_request(with_query("/sync/playback/%s" % media_type, {
+        "extended": "full",
+        "limit": limit,
+    }))
+
+
+def watchlist(media_type, limit=50):
+    return api_request(with_query("/sync/watchlist/%s/rank/asc" % media_type, {
+        "extended": "full",
+        "limit": limit,
+    }))
+
+
+def history(media_type, limit=50):
+    return api_request(with_query("/sync/history/%s" % media_type, {
+        "extended": "full",
+        "limit": limit,
+    }))
+
+
+def watched(media_type):
+    return api_request(with_query("/sync/watched/%s" % media_type, {
+        "extended": "full",
+    }))
+
+
 def revoke():
     tokens = load_tokens()
     token = tokens.get("access_token")

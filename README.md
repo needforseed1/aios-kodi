@@ -78,7 +78,9 @@ Then enable Trakt in the add-on settings and enter the client ID and client secr
 <Kodi userdata>/addon_data/plugin.video.aiostreams/trakt_tokens.json
 ```
 
-When enabled and authenticated, playback is scrobbled to Trakt from Kodi's background service. Items need IMDb-backed IDs for reliable matching.
+When enabled and authenticated, playback is scrobbled to Trakt from Kodi's background service. The add-on also adds a Trakt folder for resume progress, watchlist, watched items, and recent history. Trakt watched data is used to set Kodi playcount markers in catalog and episode lists. Trakt resume entries resolve through AIOStreams sources when opened, then start at the saved progress when a source is selected.
+
+Items need IMDb-backed IDs for reliable matching.
 
 ## Build The Repository
 

@@ -890,6 +890,7 @@ def apply_info_tag(tag, info, rating, votes):
         ("year", "setYear", int),
         ("season", "setSeason", int),
         ("episode", "setEpisode", int),
+        ("playcount", "setPlaycount", int),
     ):
         value = info.get(key)
         if value in (None, ""):
@@ -937,13 +938,16 @@ def art_from_json(value):
     return data if isinstance(data, dict) else {}
 
 
-def add_video_item(meta, item_type, item_id, art=None):
+def add_video_item(meta, item_type, item_id, art=None, watched_ids=None):
     label = meta.get("name") or meta.get("title") or item_id
     item_art = art or meta_art(meta) or fallback_art(item_type_art_key(item_type))
+    info = meta_info(meta)
+    if watched_ids and best_stream_id(meta, item_id) in watched_ids:
+        info["playcount"] = 1
     params = {"action": "details", "type": item_type, "id": item_id}
     if item_type == "movie":
         params = {"action": "streams", "type": item_type, "id": best_stream_id(meta, item_id), "title": label, "art": art_json(item_art)}
-    add_directory(label, params, item_art, meta_info(meta))
+    add_directory(label, params, item_art, info)
 
 
 set_view = views.set_view
@@ -1118,6 +1122,254 @@ def meta_info(meta):
     return info
 
 
+def trakt_enabled_for_lists():
+    return trakt.configured() and trakt.authenticated()
+
+
+def cached_trakt_watched(media_type, ttl=3600):
+    global _API_CACHE_DIRTY
+    if not trakt_enabled_for_lists() or not media_type:
+        return []
+    key = hashlib.sha1(("trakt_watched|%s" % media_type).encode("utf-8")).hexdigest()
+    cache = api_cache_data()
+    with _API_CACHE_LOCK:
+        entry = cache.get("entries", {}).get(key, {})
+        if entry and int(time.time()) - safe_int(entry.get("updated")) <= ttl and isinstance(entry.get("data"), list):
+            return entry.get("data")
+    try:
+        data = trakt.watched(media_type)
+    except trakt.TraktError as exc:
+        xbmc.log("AIOStreams Trakt watched fetch failed for %s: %s" % (media_type, exc), xbmc.LOGWARNING)
+        return []
+    if not isinstance(data, list):
+        data = []
+    with _API_CACHE_LOCK:
+        cache.setdefault("entries", {})[key] = {"updated": int(time.time()), "ttl": ttl, "data": data}
+        _API_CACHE_DIRTY = True
+    return data
+
+
+def trakt_watched_movie_ids():
+    ids = set()
+    for entry in cached_trakt_watched("movies"):
+        movie = entry.get("movie") if isinstance(entry, dict) else {}
+        imdb = trakt_imdb_id(movie)
+        if imdb:
+            ids.add(imdb)
+    return ids
+
+
+def trakt_watched_show_ids():
+    ids = set()
+    for entry in cached_trakt_watched("shows"):
+        show = entry.get("show") if isinstance(entry, dict) else {}
+        imdb = trakt_imdb_id(show)
+        if imdb:
+            ids.add(imdb)
+    return ids
+
+
+def trakt_watched_episode_ids(show_imdb=""):
+    ids = set()
+    for entry in cached_trakt_watched("shows"):
+        show = entry.get("show") if isinstance(entry, dict) else {}
+        current_show_imdb = trakt_imdb_id(show)
+        if show_imdb and current_show_imdb != show_imdb:
+            continue
+        for season in entry.get("seasons") or []:
+            season_number = safe_int(season.get("number"))
+            for episode in season.get("episodes") or []:
+                episode_number = safe_int(episode.get("number"))
+                if current_show_imdb and season_number and episode_number:
+                    ids.add("%s:%d:%d" % (current_show_imdb, season_number, episode_number))
+    return ids
+
+
+def trakt_ids(media):
+    ids = media.get("ids") if isinstance(media, dict) else {}
+    return ids if isinstance(ids, dict) else {}
+
+
+def trakt_imdb_id(media):
+    value = trakt_ids(media).get("imdb")
+    return str(value) if value and str(value).startswith("tt") else ""
+
+
+def trakt_title(media):
+    return str((media or {}).get("title") or (media or {}).get("name") or "Untitled")
+
+
+def trakt_runtime_seconds(media):
+    runtime = (media or {}).get("runtime")
+    if not runtime:
+        return 0
+    return runtime_seconds(runtime) if isinstance(runtime, str) else safe_int(runtime) * 60
+
+
+def trakt_image(value):
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    if isinstance(value, dict):
+        for key in ("url", "full", "medium", "thumb"):
+            if value.get(key):
+                return str(value.get(key))
+        return ""
+    return image_url(value)
+
+
+def trakt_art(media, fallback_key="default"):
+    images = (media or {}).get("images") or {}
+    art = {}
+    poster = trakt_image(images.get("poster") or (media or {}).get("poster"))
+    fanart = trakt_image(images.get("fanart") or images.get("background") or (media or {}).get("fanart"))
+    thumb = trakt_image(images.get("thumb") or images.get("screenshot") or (media or {}).get("thumb"))
+    logo = trakt_image(images.get("logo") or (media or {}).get("logo"))
+    if poster:
+        art.update({"thumb": poster, "thumbnail": poster, "poster": poster, "icon": poster})
+    if thumb and not art.get("thumb"):
+        art.update({"thumb": thumb, "thumbnail": thumb, "icon": thumb, "landscape": thumb})
+    if fanart:
+        art["fanart"] = fanart
+    if logo:
+        art["clearlogo"] = logo
+    return art or fallback_art(fallback_key)
+
+
+def trakt_info(media, mediatype, playcount=0, show_title=""):
+    info = {
+        "title": trakt_title(media),
+        "plot": (media or {}).get("overview") or "",
+        "mediatype": mediatype,
+    }
+    if show_title:
+        info["tvshowtitle"] = show_title
+    runtime = trakt_runtime_seconds(media)
+    if runtime:
+        info["duration"] = runtime
+    if (media or {}).get("year"):
+        info["year"] = safe_int((media or {}).get("year"))
+    if (media or {}).get("released") or (media or {}).get("first_aired"):
+        aired = str((media or {}).get("released") or (media or {}).get("first_aired"))[:10]
+        info["aired"] = aired
+        info["premiered"] = aired
+    if (media or {}).get("rating"):
+        info["rating"] = (media or {}).get("rating")
+    if (media or {}).get("votes"):
+        info["votes"] = (media or {}).get("votes")
+    if (media or {}).get("genres"):
+        info["genre"] = (media or {}).get("genres")
+    if playcount:
+        info["playcount"] = playcount
+    if mediatype == "episode":
+        if (media or {}).get("season") is not None:
+            info["season"] = safe_int((media or {}).get("season"))
+        if (media or {}).get("number") is not None:
+            info["episode"] = safe_int((media or {}).get("number"))
+    return info
+
+
+def trakt_episode_stream_id(entry):
+    episode = entry.get("episode") or {}
+    show = entry.get("show") or {}
+    show_imdb = trakt_imdb_id(show)
+    season = safe_int(episode.get("season"))
+    number = safe_int(episode.get("number"))
+    if show_imdb and season and number:
+        return "%s:%d:%d" % (show_imdb, season, number)
+    return ""
+
+
+def trakt_stream_target(entry):
+    item_type = entry.get("type") or ""
+    if not item_type:
+        if isinstance(entry.get("movie"), dict):
+            item_type = "movie"
+        elif isinstance(entry.get("episode"), dict):
+            item_type = "episode"
+        elif isinstance(entry.get("show"), dict):
+            item_type = "show"
+    if item_type == "movie" and isinstance(entry.get("movie"), dict):
+        movie = entry.get("movie")
+        item_id = trakt_imdb_id(movie)
+        if not item_id:
+            return {}
+        return {
+            "type": "movie",
+            "id": item_id,
+            "title": trakt_title(movie),
+            "art": trakt_art(movie, "movie"),
+            "info": trakt_info(movie, "movie", safe_int(entry.get("plays"))),
+            "duration": trakt_runtime_seconds(movie),
+        }
+    if item_type == "episode" and isinstance(entry.get("episode"), dict):
+        episode = entry.get("episode")
+        show = entry.get("show") if isinstance(entry.get("show"), dict) else {}
+        item_id = trakt_episode_stream_id(entry)
+        if not item_id:
+            return {}
+        show_title = trakt_title(show) if show else ""
+        season = str(episode.get("season") or "")
+        number = str(episode.get("number") or "")
+        episode_title = trakt_title(episode)
+        return {
+            "type": "series",
+            "id": item_id,
+            "video_id": item_id,
+            "show_id": trakt_imdb_id(show),
+            "show_imdb": trakt_imdb_id(show),
+            "season": season,
+            "episode": number,
+            "title": resume_episode_title(show_title, season, number, episode_title),
+            "art": trakt_art(episode, "series"),
+            "info": trakt_info(episode, "episode", safe_int(entry.get("plays")), show_title),
+            "duration": trakt_runtime_seconds(episode),
+        }
+    return {}
+
+
+def trakt_progress_position(entry, target):
+    duration = safe_int(target.get("duration")) or trakt_runtime_seconds(entry.get("movie") or entry.get("episode") or {})
+    progress = entry.get("progress")
+    try:
+        percent = float(progress or 0)
+    except (TypeError, ValueError):
+        percent = 0
+    if duration <= 0 or percent <= 0:
+        return 0
+    return int(duration * max(0, min(100, percent)) / 100.0)
+
+
+def add_trakt_stream_directory(label, target, resume=0):
+    params = {
+        "action": "streams",
+        "type": target.get("type", "movie"),
+        "id": target.get("id", ""),
+        "title": target.get("title", ""),
+        "art": art_json(target.get("art") or {}),
+        "resume": str(safe_int(resume)),
+        "duration": str(safe_int(target.get("duration"))),
+        "video_id": target.get("video_id", ""),
+        "show_id": target.get("show_id", ""),
+        "show_imdb": target.get("show_imdb", ""),
+        "season": target.get("season", ""),
+        "episode": target.get("episode", ""),
+    }
+    add_directory(label, params, target.get("art"), target.get("info"))
+
+
+def add_trakt_show_directory(entry, playcount=0):
+    show = entry.get("show") if isinstance(entry.get("show"), dict) else {}
+    item_id = trakt_imdb_id(show)
+    if not item_id:
+        return False
+    add_directory(trakt_title(show), {
+        "action": "details",
+        "type": "series",
+        "id": item_id,
+    }, trakt_art(show, "series"), trakt_info(show, "tvshow", playcount))
+    return True
+
+
 def enrich_meta(item_type, meta):
     if meta_art(meta) and meta_info(meta).get("plot"):
         return meta
@@ -1184,6 +1436,8 @@ def list_root():
 
     add_directory("Search", {"action": "search", "type": ""}, fallback_art("search"))
     add_directory("Resume", {"action": "resume"}, fallback_art("sources"))
+    if trakt_enabled_for_lists():
+        add_directory("Trakt", {"action": "trakt"}, fallback_art("sources"))
 
     catalogs = root_catalogs(manifest)
     duplicate_labels = duplicate_catalog_labels(catalogs)
@@ -1345,8 +1599,12 @@ def list_catalog(catalog_type, catalog_id, genre="", skip=0, search_query=""):
             continue
         typed_metas.append((item_type, item_id, meta))
     enriched_metas = parallel_map(lambda entry: enrich_meta(entry[0], entry[2]), typed_metas)
+    watched_by_type = {
+        "movie": trakt_watched_movie_ids() if any(entry[0] == "movie" for entry in typed_metas) else set(),
+        "series": trakt_watched_show_ids() if any(entry[0] == "series" for entry in typed_metas) else set(),
+    }
     for (item_type, item_id, _meta), enriched in zip(typed_metas, enriched_metas):
-        add_video_item(enriched, item_type, item_id)
+        add_video_item(enriched, item_type, item_id, watched_ids=watched_by_type.get(item_type))
 
     if metas and not search_query and not reached_end:
         add_directory("Next page", {
@@ -1414,6 +1672,7 @@ def list_episodes(item_type, item_id, season):
     meta = response.get("meta") or {}
     videos = [video for video in meta.get("videos") or [] if video_season(video) == str(season)]
     imdb_id = tvmaze_imdb_id(meta, item_id) if item_type == "series" else ""
+    watched_episode_ids = trakt_watched_episode_ids(imdb_id) if imdb_id else set()
     imdb_scores = load_imdb_episode_scores() if imdb_episode_scores_enabled() and imdb_id else {"shows": {}}
     if imdb_episode_scores_enabled() and imdb_id and imdb_cache_stale(imdb_scores, imdb_id, season, videos):
         queue_imdb_season_scores(item_type, item_id, season)
@@ -1439,6 +1698,8 @@ def list_episodes(item_type, item_id, season):
         show_title = meta.get("name") or meta.get("title") or item_id
         content_title = resume_episode_title(show_title, season, episode, episode_title)
         info = episode_info(video, meta, season, episode)
+        if imdb_id and episode and ("%s:%s:%s" % (imdb_id, season, episode)) in watched_episode_ids:
+            info["playcount"] = 1
         if str(episode).isdigit():
             info["episode"] = int(episode)
         if str(season).isdigit():
@@ -1866,7 +2127,7 @@ def sanitize_playback_headers(headers):
     }
 
 
-def list_streams(item_type, item_id, content_title="", content_art_json="", video_id="", show_id="", show_imdb="", season="", episode=""):
+def list_streams(item_type, item_id, content_title="", content_art_json="", video_id="", show_id="", show_imdb="", season="", episode="", resume=0, duration=0):
     base = aiostreams_base()
     if not base:
         error("AIOStreams manifest URL is not configured")
@@ -1901,6 +2162,8 @@ def list_streams(item_type, item_id, content_title="", content_art_json="", vide
                 "show_imdb": show_imdb,
                 "season": season,
                 "episode": episode,
+                "resume": safe_int(resume),
+                "duration": safe_int(duration),
                 "title": content_title or item_id,
                 "stream_title": label,
                 "art": content_art,
@@ -2199,13 +2462,131 @@ def trakt_sign_out():
     settings_menu()
 
 
+def list_trakt():
+    xbmcplugin.setPluginCategory(HANDLE, "Trakt")
+    if not trakt.configured():
+        add_action("Configure Trakt", {"action": "settings"}, fallback_art("settings"))
+        set_view("videos")
+        return
+    if not trakt.authenticated():
+        add_action("Authenticate Trakt", {"action": "trakt_auth"}, fallback_art("settings"))
+        set_view("videos")
+        return
+    add_directory("Resume", {"action": "trakt_progress", "type": "all"}, fallback_art("sources"))
+    add_directory("Watchlist Movies", {"action": "trakt_watchlist", "type": "movies"}, fallback_art("movie"))
+    add_directory("Watchlist Shows", {"action": "trakt_watchlist", "type": "shows"}, fallback_art("series"))
+    add_directory("Watched Movies", {"action": "trakt_watched", "type": "movies"}, fallback_art("movie"))
+    add_directory("Watched Shows", {"action": "trakt_watched", "type": "shows"}, fallback_art("series"))
+    add_directory("Recent Movie History", {"action": "trakt_history", "type": "movies"}, fallback_art("movie"))
+    add_directory("Recent Episode History", {"action": "trakt_history", "type": "episodes"}, fallback_art("series"))
+    set_view("videos")
+
+
+def fetch_trakt_items(fetcher, label):
+    if not trakt_enabled_for_lists():
+        error("Trakt is not authenticated")
+        return []
+    try:
+        data = fetcher()
+    except trakt.TraktError as exc:
+        error("%s failed: %s" % (label, exc))
+        return []
+    return data if isinstance(data, list) else []
+
+
+def trakt_progress_entries(media_type="all"):
+    entries = []
+    types = ("movies", "episodes") if media_type == "all" else (media_type,)
+    for current_type in types:
+        entries.extend(fetch_trakt_items(lambda current_type=current_type: trakt.playback(current_type), "Trakt resume"))
+    return sorted(entries, key=lambda item: item.get("paused_at") or "", reverse=True)
+
+
+def add_trakt_progress_entry(entry):
+    target = trakt_stream_target(entry)
+    if not target:
+        return False
+    position = trakt_progress_position(entry, target)
+    if not should_keep_resume(position, safe_int(target.get("duration"))):
+        return False
+    label = resume_label({"title": target.get("title")}, position, safe_int(target.get("duration")))
+    add_trakt_stream_directory(label, target, position)
+    return True
+
+
+def list_trakt_progress(media_type="all"):
+    xbmcplugin.setPluginCategory(HANDLE, "Trakt Resume")
+    count = 0
+    for entry in trakt_progress_entries(media_type):
+        if add_trakt_progress_entry(entry):
+            count += 1
+    if not count:
+        add_directory("No Trakt resume items", {"action": "noop"}, fallback_art("sources"), {"title": "No Trakt resume items"})
+    set_view("videos", "view_results", cache_to_disc=False)
+
+
+def list_trakt_watchlist(media_type):
+    xbmcplugin.setPluginCategory(HANDLE, "Trakt Watchlist")
+    items = fetch_trakt_items(lambda: trakt.watchlist(media_type), "Trakt watchlist")
+    count = 0
+    for entry in items:
+        if entry.get("type") == "show" or (not entry.get("type") and isinstance(entry.get("show"), dict)):
+            count += 1 if add_trakt_show_directory(entry) else 0
+            continue
+        target = trakt_stream_target(entry)
+        if target:
+            add_trakt_stream_directory(target.get("title"), target)
+            count += 1
+    if not count:
+        add_directory("No Trakt watchlist items", {"action": "noop"}, fallback_art("sources"), {"title": "No Trakt watchlist items"})
+    set_view("movies" if media_type == "movies" else "tvshows", "view_results", cache_to_disc=False)
+
+
+def list_trakt_history(media_type):
+    xbmcplugin.setPluginCategory(HANDLE, "Trakt History")
+    items = fetch_trakt_items(lambda: trakt.history(media_type), "Trakt history")
+    count = 0
+    for entry in items:
+        target = trakt_stream_target(entry)
+        if not target:
+            continue
+        watched_at = str(entry.get("watched_at") or "")[:10]
+        label = target.get("title")
+        if watched_at:
+            label = "%s (%s)" % (label, watched_at)
+        info = dict(target.get("info") or {})
+        info["playcount"] = max(1, safe_int(info.get("playcount"), 1))
+        target = dict(target, info=info)
+        add_trakt_stream_directory(label, target)
+        count += 1
+    if not count:
+        add_directory("No Trakt history items", {"action": "noop"}, fallback_art("sources"), {"title": "No Trakt history items"})
+    set_view("episodes" if media_type == "episodes" else "movies", "view_results", cache_to_disc=False)
+
+
+def list_trakt_watched(media_type):
+    xbmcplugin.setPluginCategory(HANDLE, "Trakt Watched")
+    items = fetch_trakt_items(lambda: trakt.watched(media_type), "Trakt watched")
+    count = 0
+    for entry in items:
+        plays = max(1, safe_int(entry.get("plays"), 1))
+        entry = dict(entry, plays=plays)
+        if entry.get("type") == "show" or (not entry.get("type") and isinstance(entry.get("show"), dict)):
+            count += 1 if add_trakt_show_directory(entry, plays) else 0
+            continue
+        target = trakt_stream_target(entry)
+        if target:
+            add_trakt_stream_directory(target.get("title"), target)
+            count += 1
+    if not count:
+        add_directory("No Trakt watched items", {"action": "noop"}, fallback_art("sources"), {"title": "No Trakt watched items"})
+    set_view("movies" if media_type == "movies" else "tvshows", "view_results", cache_to_disc=False)
+
+
 def list_resume():
     xbmcplugin.setPluginCategory(HANDLE, "Resume")
     entries = [entry for entry in load_resume_entries() if should_keep_resume(safe_int(entry.get("position")), safe_int(entry.get("duration")))]
-    if not entries:
-        add_directory("No resumable items", {"action": "noop"}, fallback_art("sources"), {"title": "No resumable items"})
-        set_view("videos")
-        return
+    count = 0
     stream_contexts = load_stream_contexts()
     for entry in entries:
         position = safe_int(entry.get("position"))
@@ -2239,8 +2620,16 @@ def list_resume():
             "token": token,
             "resume": str(position),
         }, art=entry_art, info=info)
-    save_stream_contexts(stream_contexts)
-    set_view("episodes", "view_episodes", cache_to_disc=False)
+        count += 1
+    if entries:
+        save_stream_contexts(stream_contexts)
+    if trakt_enabled_for_lists():
+        for entry in trakt_progress_entries("all"):
+            if add_trakt_progress_entry(entry):
+                count += 1
+    if not count:
+        add_directory("No resumable items", {"action": "noop"}, fallback_art("sources"), {"title": "No resumable items"})
+    set_view("episodes" if count else "videos", "view_episodes", cache_to_disc=False)
 
 
 def resume_label(entry, position, duration):
@@ -2449,6 +2838,16 @@ def dispatch():
         trakt_authenticate()
     elif action == "trakt_sign_out":
         trakt_sign_out()
+    elif action == "trakt":
+        list_trakt()
+    elif action == "trakt_progress":
+        list_trakt_progress(params.get("type", "all"))
+    elif action == "trakt_watchlist":
+        list_trakt_watchlist(params.get("type", "movies"))
+    elif action == "trakt_history":
+        list_trakt_history(params.get("type", "movies"))
+    elif action == "trakt_watched":
+        list_trakt_watched(params.get("type", "movies"))
     elif action == "refresh_aiometadata":
         refresh_service("aiometadata")
     elif action == "refresh_aiostreams":
@@ -2476,6 +2875,8 @@ def dispatch():
             params.get("show_imdb", ""),
             params.get("season", ""),
             params.get("episode", ""),
+            safe_int(params.get("resume")),
+            safe_int(params.get("duration")),
         )
     elif action == "play":
         play(params.get("url", ""), params.get("headers", "{}"), 0, {
@@ -2488,6 +2889,7 @@ def dispatch():
             "show_imdb": params.get("show_imdb", ""),
             "season": params.get("season", ""),
             "episode": params.get("episode", ""),
+            "resume": safe_int(params.get("resume")),
             "duration": safe_int(params.get("duration")),
             "art": art_from_json(params.get("art", "")),
         })
