@@ -64,6 +64,30 @@ Use `Settings -> Credentials file location` inside the add-on to create or show 
 
 For best matching, use a metadata provider that returns IMDb IDs. Cinemeta works as the default fallback for standard movie and series IDs.
 
+### AIOStreams URL Workaround
+
+AIOStreams and AIOMetadata install URLs can be long and usually contain private path segments for the user's configured provider stack. Kodi's settings editor is not always a good place to paste or maintain those URLs, especially on TV keyboards and remote-driven installs.
+
+For that reason, the add-on supports the profile `credentials.json` file shown above. It is a practical workaround for entering the AIOStreams URLs outside Kodi's settings UI while still keeping them in Kodi's add-on data directory. Kodi settings still take precedence, so leave the settings fields blank if you want the JSON file values to be used.
+
+The add-on accepts these aliases for the AIOStreams manifest URL:
+
+```text
+aiostreams_url
+aio_streams_url
+aio_url
+aiostreams
+```
+
+And these aliases for the AIOMetadata manifest URL:
+
+```text
+aiometadata_url
+aio_metadata_url
+metadata_url
+aiometadata
+```
+
 ## Trakt
 
 Trakt integration is optional. Create a Trakt API app at:
@@ -81,6 +105,28 @@ Then enable Trakt in the add-on settings and enter the client ID and client secr
 When enabled and authenticated, playback is scrobbled to Trakt from Kodi's background service. The add-on also adds a Trakt folder for resume progress, watchlist, watched items, and recent history. Trakt watched data is used to set Kodi playcount markers in catalog and episode lists. Trakt resume entries resolve through AIOStreams sources when opened, then start at the saved progress when a source is selected.
 
 Items need IMDb-backed IDs for reliable matching.
+
+## Layout and View Settings
+
+Kodi view modes are not portable. The same visual layout can have different numeric IDs in different skins, and some skins ignore direct `Container.SetViewMode(...)` calls unless the view is applied after the directory finishes loading.
+
+The add-on's `Settings -> View Mode Setup` menu lets you configure separate view IDs for:
+
+- Main add-on lists
+- Catalog results
+- Search results
+- Season folders
+- Episode lists
+- Source results
+
+The setup screen shows view IDs detected from the active skin, plus common fallback candidates. When you choose a view, the add-on saves it as a raw Kodi view ID in the relevant setting.
+
+Internally the add-on uses a two-step workaround:
+
+1. It exposes skin hint properties named `aios_forced_view` and `aios_forced_view_id` for skins that know how to read them.
+2. It falls back to calling `Container.SetViewMode(...)` after a short configurable delay.
+
+The delay is controlled by `View apply delay in milliseconds`. Increase it if your skin opens the correct folder but lands on the wrong layout; set the relevant view setting to `0` to disable forcing for that section.
 
 ## Build The Repository
 
