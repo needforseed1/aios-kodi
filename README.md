@@ -13,24 +13,26 @@ Torrent infohash-only streams are shown as unsupported because Kodi cannot play 
 
 ## Install From Repository
 
-Download the repository add-on zip:
-
-[repository.aiostreams-0.1.0.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip)
-
-Install it in Kodi:
-
-1. Open `Settings -> Add-ons -> Install from zip file`.
-2. Select `repository.aiostreams-0.1.0.zip`.
-3. Open `Install from repository -> AIOStreams Repository -> Video add-ons`.
-4. Install `AIOStreams for Kodi`.
-
-When the hosted repository is updated, Kodi can update the add-on through the normal add-on update flow.
-
-Direct repository files are published at:
+Add the repository URL as a Kodi file source:
 
 ```text
 https://needforseed1.github.io/aios-kodi/
 ```
+
+Then install the repository add-on:
+
+1. Open `Settings -> File manager -> Add source`.
+2. Enter the URL above and name it `AIOStreams`.
+3. Open `Settings -> Add-ons -> Install from zip file`.
+4. Select `AIOStreams -> repository.aiostreams -> repository.aiostreams-0.1.0.zip`.
+5. Open `Install from repository -> AIOStreams Repository -> Video add-ons`.
+6. Install `AIOStreams for Kodi`.
+
+When the hosted repository is updated, Kodi can update the add-on through the normal add-on update flow.
+
+Direct zip fallback:
+
+[repository.aiostreams-0.1.0.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip)
 
 ## Configure
 
