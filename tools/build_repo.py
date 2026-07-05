@@ -111,8 +111,8 @@ def build_repository_zip(output_dir, repo_tree, repository_manifest):
     return zip_path
 
 
-def publish_source_zip(output_dir, repository_zip):
-    source_zip = output_dir / repository_zip.name
+def publish_source_zip(output_dir, repository_zip, source_name=None):
+    source_zip = output_dir / (source_name or repository_zip.name)
     shutil.copyfile(repository_zip, source_zip)
     return source_zip
 
@@ -168,13 +168,25 @@ def write_index_html(output_dir, title, links, base_url=None):
     return index_html
 
 
-def write_indexes(output_dir, base_url, repository_zip, source_zip):
+def source_links(values):
+    links = []
+    for value in values or ():
+        if "=" in value:
+            path, label = value.split("=", 1)
+        else:
+            path = value
+            label = Path(value).name
+        links.append((label, path))
+    return links
+
+
+def write_indexes(output_dir, base_url, repository_zip, source_zip, extra_source_links=None):
     repository_name = repository_zip.parent.name
 
     return [
         write_index_html(output_dir, "AIOStreams Kodi Repository", [
             (source_zip.name, source_zip.name),
-        ], base_url),
+        ] + source_links(extra_source_links), base_url),
         write_index_html(repository_zip.parent, repository_name, [
             (repository_zip.name, repository_zip.name),
         ]),
@@ -193,6 +205,8 @@ def main():
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Public URL where the generated repo directory is hosted.")
     parser.add_argument("--output-dir", default=str(ROOT / "repo"), help="Directory to write repository files into.")
     parser.add_argument("--repository-manifest", default=str(DEFAULT_REPOSITORY_MANIFEST), help="Repository add-on manifest to include.")
+    parser.add_argument("--source-name", help="Optional root-level repository zip filename for Kodi file-source browsing.")
+    parser.add_argument("--extra-source-link", action="append", default=[], help="Additional root index link, as path or path=label.")
     parser.add_argument("--clean", action="store_true", help="Remove the output directory before building.")
     args = parser.parse_args()
 
@@ -210,7 +224,7 @@ def main():
     repo_tree = repository_tree(args.base_url, repository_manifest_path)
     plugin_zip = build_plugin_zip(output_dir)
     repository_zip = build_repository_zip(output_dir, repo_tree, repository_manifest_path)
-    source_zip = publish_source_zip(output_dir, repository_zip)
+    source_zip = publish_source_zip(output_dir, repository_zip, args.source_name)
 
     plugin_manifest = PLUGIN_MANIFEST.read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -218,7 +232,7 @@ def main():
         repo_tree.write(repo_manifest_path, encoding="UTF-8", xml_declaration=True, short_empty_elements=True)
         repository_manifest = repo_manifest_path.read_text(encoding="utf-8")
     addons_xml = write_addons_xml(output_dir, [plugin_manifest, repository_manifest])
-    index_files = write_indexes(output_dir, args.base_url, repository_zip, source_zip)
+    index_files = write_indexes(output_dir, args.base_url, repository_zip, source_zip, args.extra_source_link)
 
     print("Wrote %s" % display_path(addons_xml))
     print("Wrote %s" % display_path(output_dir / "addons.xml.md5"))

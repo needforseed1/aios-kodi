@@ -22,12 +22,12 @@ Add the repository URL as a Kodi file source:
 https://needforseed1.github.io/aios-kodi/
 ```
 
-Then install the repository add-on:
+Then install the stable repository add-on:
 
 1. Open `Settings -> File manager -> Add source`.
 2. Enter the URL above and name it `AIOStreams`.
 3. Open `Settings -> Add-ons -> Install from zip file`.
-4. Select `AIOStreams -> repository.aiostreams-0.1.2.zip`.
+4. Select `AIOStreams -> repository.aiostreams.STABLE.zip`.
 5. Open `Install from repository -> AIOStreams Repository -> Video add-ons`.
 6. Install `AIOStreams for Kodi`.
 
@@ -35,20 +35,22 @@ When the hosted repository is updated, Kodi can update the add-on through the no
 
 Direct zip fallback:
 
-[repository.aiostreams-0.1.2.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams-0.1.2.zip)
+[repository.aiostreams.STABLE.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams.STABLE.zip)
 
 ## Beta Repository
 
-Beta builds are published separately so stable repository users do not receive preview updates automatically. Add the beta repository URL as a Kodi file source only on devices where you want opt-in preview releases:
+Beta builds are published separately so stable repository users do not receive preview updates automatically. Use beta only on devices where you want opt-in preview releases.
+
+From the same Kodi file source:
+
+```text
+AIOStreams -> repository.aiostreams.BETA.zip
+```
+
+Direct beta source URL:
 
 ```text
 https://needforseed1.github.io/aios-kodi/beta/
-```
-
-Then install the beta repository add-on:
-
-```text
-repository.aiostreams.beta-0.1.2.zip
 ```
 
 The beta repository uses the same video add-on ID, so beta versions replace stable versions on devices where the beta repository is installed.
