@@ -32,7 +32,7 @@ jobs:
         working-directory: beta-src
       - run: cp beta-src/tools/build_repo.py stable-src/tools/build_repo.py
       - run: cp beta-src/repository.aiostreams/addon.xml stable-src/repository.aiostreams/addon.xml
-      - run: python3 tools/build_repo.py --clean --source-name repository.aiostreams.STABLE.zip --extra-source-link beta/repository.aiostreams.BETA.zip=repository.aiostreams.BETA.zip
+      - run: python3 tools/build_repo.py --clean --source-name repository.aiostreams.STABLE.zip --extra-source-link repository.aiostreams.BETA.zip
         working-directory: stable-src
       - run: python3 tools/build_repo.py --clean --output-dir repo-beta --base-url https://needforseed1.github.io/aios-kodi/beta/ --repository-manifest repository.aiostreams.beta/addon.xml --source-name repository.aiostreams.BETA.zip
         working-directory: beta-src
@@ -41,6 +41,7 @@ jobs:
           cp -R stable-src/repo/. site/
           mkdir -p site/beta
           cp -R beta-src/repo-beta/. site/beta/
+          cp site/beta/repository.aiostreams.BETA.zip site/repository.aiostreams.BETA.zip
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

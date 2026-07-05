@@ -37,6 +37,8 @@ Direct zip fallback:
 
 [repository.aiostreams.STABLE.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams.STABLE.zip)
 
+[repository.aiostreams.BETA.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams.BETA.zip)
+
 ## Beta Repository
 
 Beta builds are published separately so stable repository users do not receive preview updates automatically. Use beta only on devices where you want opt-in preview releases.
