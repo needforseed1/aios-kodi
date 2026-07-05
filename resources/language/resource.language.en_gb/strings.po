@@ -1,7 +1,7 @@
 # Kodi Media Center language file
 # Addon Name: AIOStreams for Kodi
 # Addon id: plugin.video.aiostreams
-# Addon Provider: OpenCode
+# Addon Provider: AIOStreams
 msgid ""
 msgstr ""
 "Project-Id-Version: plugin.video.aiostreams\n"
