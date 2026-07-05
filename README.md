@@ -27,7 +27,7 @@ Then install the repository add-on:
 1. Open `Settings -> File manager -> Add source`.
 2. Enter the URL above and name it `AIOStreams`.
 3. Open `Settings -> Add-ons -> Install from zip file`.
-4. Select `AIOStreams -> repository.aiostreams -> repository.aiostreams-0.1.0.zip`.
+4. Select `AIOStreams -> repository.aiostreams-0.1.2.zip`.
 5. Open `Install from repository -> AIOStreams Repository -> Video add-ons`.
 6. Install `AIOStreams for Kodi`.
 
@@ -35,7 +35,7 @@ When the hosted repository is updated, Kodi can update the add-on through the no
 
 Direct zip fallback:
 
-[repository.aiostreams-0.1.0.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip)
+[repository.aiostreams-0.1.2.zip](https://needforseed1.github.io/aios-kodi/repository.aiostreams-0.1.2.zip)
 
 ## Beta Repository
 
@@ -48,7 +48,7 @@ https://needforseed1.github.io/aios-kodi/beta/
 Then install the beta repository add-on:
 
 ```text
-repository.aiostreams.beta/repository.aiostreams.beta-0.1.0.zip
+repository.aiostreams.beta-0.1.2.zip
 ```
 
 The beta repository uses the same video add-on ID, so beta versions replace stable versions on devices where the beta repository is installed.
@@ -200,7 +200,7 @@ This writes:
 repo/addons.xml
 repo/addons.xml.md5
 repo/plugin.video.aiostreams/plugin.video.aiostreams-<version>.zip
-repo/repository.aiostreams/repository.aiostreams-0.1.0.zip
+repo/repository.aiostreams/repository.aiostreams-0.1.2.zip
 ```
 
 The default repository URL is:
@@ -230,13 +230,13 @@ The `repository` workflow builds and deploys the repository tree to GitHub Pages
 The published stable repository zip is available at:
 
 ```text
-https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.0.zip
+https://needforseed1.github.io/aios-kodi/repository.aiostreams/repository.aiostreams-0.1.2.zip
 ```
 
 The published beta repository zip is available at:
 
 ```text
-https://needforseed1.github.io/aios-kodi/beta/repository.aiostreams.beta/repository.aiostreams.beta-0.1.0.zip
+https://needforseed1.github.io/aios-kodi/beta/repository.aiostreams.beta/repository.aiostreams.beta-0.1.2.zip
 ```
 
 ## Development

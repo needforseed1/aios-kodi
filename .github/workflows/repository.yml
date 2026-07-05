@@ -30,6 +30,8 @@ jobs:
           python-version: "3.12"
       - run: python3 -m compileall -q addon.py service.py resources/lib tools/build_repo.py
         working-directory: beta-src
+      - run: cp beta-src/tools/build_repo.py stable-src/tools/build_repo.py
+      - run: cp beta-src/repository.aiostreams/addon.xml stable-src/repository.aiostreams/addon.xml
       - run: python3 tools/build_repo.py --clean
         working-directory: stable-src
       - run: python3 tools/build_repo.py --clean --output-dir repo-beta --base-url https://needforseed1.github.io/aios-kodi/beta/ --repository-manifest repository.aiostreams.beta/addon.xml

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import hashlib
 import shutil
 import tempfile
@@ -44,9 +45,10 @@ def repository_tree(base_url, repository_manifest):
         raise RuntimeError("repository manifest is missing repository dir")
 
     base_url = base_url.rstrip("/") + "/"
+    cache_suffix = "?v=" + root.attrib["version"]
     values = {
-        "info": base_url + "addons.xml",
-        "checksum": base_url + "addons.xml.md5",
+        "info": base_url + "addons.xml" + cache_suffix,
+        "checksum": base_url + "addons.xml.md5" + cache_suffix,
         "datadir": base_url,
     }
     for tag, value in values.items():
@@ -109,6 +111,12 @@ def build_repository_zip(output_dir, repo_tree, repository_manifest):
     return zip_path
 
 
+def publish_source_zip(output_dir, repository_zip):
+    source_zip = output_dir / repository_zip.name
+    shutil.copyfile(repository_zip, source_zip)
+    return source_zip
+
+
 def write_addons_xml(output_dir, manifests):
     addons = ET.Element("addons")
     for manifest in manifests:
@@ -121,8 +129,56 @@ def write_addons_xml(output_dir, manifests):
     addons_xml.write_text(xml, encoding="utf-8")
 
     checksum = hashlib.md5(xml.encode("utf-8")).hexdigest()
-    (output_dir / "addons.xml.md5").write_text(checksum, encoding="utf-8")
+    (output_dir / "addons.xml.md5").write_text(checksum + "\n", encoding="utf-8")
     return addons_xml
+
+
+def write_index_html(output_dir, title, links, base_url=None):
+    if base_url:
+        base_url = base_url.rstrip("/") + "/"
+    items = "\n".join(
+        '    <li><a href="%s">%s</a></li>' % (
+            html.escape(path, quote=True),
+            html.escape(label),
+        )
+        for label, path in links
+    )
+    body = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+</head>
+<body>
+  <h1>{title}</h1>
+  <ul>
+{items}
+  </ul>
+{base_url_line}
+</body>
+</html>
+""".format(
+        title=html.escape(title),
+        items=items,
+        base_url_line='  <p>Base URL: <code>%s</code></p>' % html.escape(base_url) if base_url else "",
+    )
+    index_html = output_dir / "index.html"
+    index_html.write_text(body, encoding="utf-8")
+    return index_html
+
+
+def write_indexes(output_dir, base_url, repository_zip, source_zip):
+    repository_name = repository_zip.parent.name
+
+    return [
+        write_index_html(output_dir, "AIOStreams Kodi Repository", [
+            (source_zip.name, source_zip.name),
+        ], base_url),
+        write_index_html(repository_zip.parent, repository_name, [
+            (repository_zip.name, repository_zip.name),
+        ]),
+    ]
 
 
 def display_path(path):
@@ -154,6 +210,7 @@ def main():
     repo_tree = repository_tree(args.base_url, repository_manifest_path)
     plugin_zip = build_plugin_zip(output_dir)
     repository_zip = build_repository_zip(output_dir, repo_tree, repository_manifest_path)
+    source_zip = publish_source_zip(output_dir, repository_zip)
 
     plugin_manifest = PLUGIN_MANIFEST.read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -161,9 +218,13 @@ def main():
         repo_tree.write(repo_manifest_path, encoding="UTF-8", xml_declaration=True, short_empty_elements=True)
         repository_manifest = repo_manifest_path.read_text(encoding="utf-8")
     addons_xml = write_addons_xml(output_dir, [plugin_manifest, repository_manifest])
+    index_files = write_indexes(output_dir, args.base_url, repository_zip, source_zip)
 
     print("Wrote %s" % display_path(addons_xml))
     print("Wrote %s" % display_path(output_dir / "addons.xml.md5"))
+    for index_file in index_files:
+        print("Wrote %s" % display_path(index_file))
+    print("Wrote %s" % display_path(source_zip))
     print("Wrote %s" % display_path(plugin_zip))
     print("Wrote %s" % display_path(repository_zip))
 
